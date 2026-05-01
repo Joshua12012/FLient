@@ -55,9 +55,6 @@ android.minapi = 21
 # (int) Android NDK API level to use
 android.ndk = 25b
 
-# (int) Android SDK API level to use
-android.sdk = 33
-
 # (str) Android NDK directory (if empty, it will be automatically downloaded.)
 #android.ndk_path =
 
