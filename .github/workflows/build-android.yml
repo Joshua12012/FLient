@@ -47,7 +47,8 @@ jobs:
 
     - name: Build APK
       run: |
-        buildozer android debug
+        export JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64
+        yes | buildozer android debug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
