@@ -1,272 +1,180 @@
 """
-adaptive_serving.py
--------------------
-Adaptive Inference Deployment for Edge Devices.
+adaptive_serving.py  —  Device profiler + adaptive model tier selection
 
-Problem:
-  Edge devices have wildly different capabilities (CPU speed, RAM, battery).
-  Serving the same large model to every device is wasteful / infeasible.
+Run this on EACH device (phone or PC) before launching client.py.
+It inspects the hardware, picks the right model variant, and prints the
+client.py command to run.
 
-Solution – Adaptive Serving:
-  1. DEVICE PROFILER : measures available compute and memory.
-  2. MODEL SELECTOR  : picks the best model variant for that device tier.
-  3. LATENCY BENCHMARKER : runs a quick forward-pass timing test.
-  4. INFERENCE ENGINE : wraps the selected model with async-ready inference.
-
-Device Tiers (simulated)
-  TIER_HIGH   → full EdgeCNN_Full   (laptops, powerful phones)
-  TIER_MEDIUM → EdgeCNN_Medium      (mid-range phones, Raspberry Pi 4)
-  TIER_LOW    → EdgeCNN_Small       (microcontrollers, old phones)
-
-Knowledge Distillation hint (architecture note):
-  In production the MEDIUM/SMALL models would be trained via knowledge
-  distillation from the LARGE teacher model.  Here we demonstrate the
-  serving selection logic; the distillation training loop is described
-  in the comments.
+Tiers:
+    high   → large model  (RAM ≥ 4 GB, cores ≥ 4)
+    medium → medium model (RAM 2–4 GB, or cores 2–3)
+    low    → small model  (RAM < 2 GB, or single core)
 """
 
-import time
 import platform
-import psutil
-import numpy as np
-import torch
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple
+import subprocess
+import sys
+import os
 
-from model import get_model, count_parameters
-
-
-# ---------------------------------------------------------------------------
-# Device Profile
-# ---------------------------------------------------------------------------
-
-@dataclass
-class DeviceProfile:
-    cpu_cores:      int
-    ram_mb:         float
-    cpu_freq_mhz:   float
-    platform:       str
-    tier:           str = field(init=False)   # assigned by profiler
-
-    def __post_init__(self):
-        self.tier = _assign_tier(self.cpu_cores, self.ram_mb, self.cpu_freq_mhz)
-
-    def summary(self) -> str:
-        return (
-            f"Device Profile\n"
-            f"  Platform   : {self.platform}\n"
-            f"  CPU Cores  : {self.cpu_cores}\n"
-            f"  RAM        : {self.ram_mb:.0f} MB\n"
-            f"  CPU Freq   : {self.cpu_freq_mhz:.0f} MHz\n"
-            f"  Tier       : {self.tier.upper()}\n"
-        )
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 
-def _assign_tier(cores: int, ram_mb: float, freq_mhz: float) -> str:
-    score = cores * 0.4 + (ram_mb / 1024) * 0.4 + (freq_mhz / 1000) * 0.2
-    if score >= 3.0:
-        return "high"
-    if score >= 1.5:
-        return "medium"
-    return "low"
+# ── hardware profiler ─────────────────────────────────────────────────────────
+
+def profile_device():
+    """Returns a dict of hardware metrics. Works on Android/Termux and PC."""
+    info = {
+        "platform":   platform.system(),
+        "machine":    platform.machine(),
+        "python":     platform.python_version(),
+        "cpu_cores":  os.cpu_count() or 1,
+        "ram_gb":     0.0,
+        "cpu_freq_mhz": 0.0,
+    }
+
+    if PSUTIL_AVAILABLE:
+        mem = psutil.virtual_memory()
+        info["ram_gb"] = mem.total / (1024 ** 3)
+        freq = psutil.cpu_freq()
+        if freq:
+            info["cpu_freq_mhz"] = freq.current
+    else:
+        # Fallback: read /proc/meminfo (works on Android/Termux)
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal"):
+                        kb = int(line.split()[1])
+                        info["ram_gb"] = kb / (1024 ** 2)
+                        break
+        except Exception:
+            info["ram_gb"] = 1.0   # safe default
+
+        # Fallback: read CPU freq from /sys
+        try:
+            with open("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq") as f:
+                info["cpu_freq_mhz"] = int(f.read().strip()) / 1000
+        except Exception:
+            info["cpu_freq_mhz"] = 1000.0
+
+    return info
 
 
-# ---------------------------------------------------------------------------
-# Device Profiler
-# ---------------------------------------------------------------------------
-
-class DeviceProfiler:
-    """Inspect the current host to determine its hardware tier."""
-
-    @staticmethod
-    def profile() -> DeviceProfile:
-        cores    = psutil.cpu_count(logical=True) or 2
-        ram_mb   = psutil.virtual_memory().total / (1024 ** 2)
-        freq_info = psutil.cpu_freq()
-        freq_mhz  = freq_info.current if freq_info else 1000.0
-        plat      = f"{platform.system()} {platform.machine()}"
-
-        return DeviceProfile(
-            cpu_cores    = cores,
-            ram_mb       = ram_mb,
-            cpu_freq_mhz = freq_mhz,
-            platform     = plat,
-        )
-
-    @staticmethod
-    def simulate(tier: str) -> DeviceProfile:
-        """Simulate a specific device tier for testing."""
-        profiles = {
-            "high":   DeviceProfile(cpu_cores=8,  ram_mb=8192, cpu_freq_mhz=3200, platform="Simulated/x86_64"),
-            "medium": DeviceProfile(cpu_cores=4,  ram_mb=2048, cpu_freq_mhz=1800, platform="Simulated/ARM64"),
-            "low":    DeviceProfile(cpu_cores=1,  ram_mb=256,  cpu_freq_mhz=600,  platform="Simulated/ARM32"),
-        }
-        return profiles[tier]
-
-
-# ---------------------------------------------------------------------------
-# Model Selector
-# ---------------------------------------------------------------------------
-
-TIER_TO_MODEL: Dict[str, str] = {
-    "high":   "large",
-    "medium": "medium",
-    "low":    "small",
-}
-
-
-class ModelSelector:
-    """Selects the optimal model variant based on device tier."""
-
-    @staticmethod
-    def select(profile: DeviceProfile) -> str:
-        return TIER_TO_MODEL[profile.tier]
-
-    @staticmethod
-    def explain(profile: DeviceProfile) -> str:
-        variant = TIER_TO_MODEL[profile.tier]
-        model   = get_model(variant)
-        params  = count_parameters(model)
-        return (
-            f"Selected Model Variant: {variant.upper()}\n"
-            f"  Parameters : {params:,}\n"
-            f"  Rationale  : Device tier={profile.tier}, "
-            f"RAM={profile.ram_mb:.0f}MB, Cores={profile.cpu_cores}\n"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Latency Benchmarker
-# ---------------------------------------------------------------------------
-
-class LatencyBenchmarker:
+def assign_tier(info):
     """
-    Measures forward-pass latency and estimates throughput.
-    Runs N warm-up passes then K timed passes.
+    Assigns a tier based on RAM and CPU cores.
+    Returns ('high'|'medium'|'low', model_variant, reason)
     """
+    ram   = info["ram_gb"]
+    cores = info["cpu_cores"]
 
-    def __init__(self, warmup: int = 3, runs: int = 10, batch_size: int = 1):
-        self.warmup     = warmup
-        self.runs       = runs
-        self.batch_size = batch_size
-
-    def benchmark(self, model: torch.nn.Module, device: str = "cpu") -> Dict:
-        model = model.to(device)
-        model.eval()
-        dummy = torch.zeros(self.batch_size, 1, 28, 28).to(device)
-
-        # Warm-up
-        with torch.no_grad():
-            for _ in range(self.warmup):
-                _ = model(dummy)
-
-        # Timed runs
-        times = []
-        with torch.no_grad():
-            for _ in range(self.runs):
-                t0 = time.perf_counter()
-                _  = model(dummy)
-                times.append(time.perf_counter() - t0)
-
-        latency_ms = np.array(times) * 1000
-        return {
-            "mean_latency_ms":   round(float(latency_ms.mean()), 3),
-            "p95_latency_ms":    round(float(np.percentile(latency_ms, 95)), 3),
-            "p99_latency_ms":    round(float(np.percentile(latency_ms, 99)), 3),
-            "throughput_fps":    round(1000.0 / float(latency_ms.mean()), 1),
-            "batch_size":        self.batch_size,
-        }
+    if ram >= 4.0 and cores >= 4:
+        return "high",   "large",  f"RAM={ram:.1f}GB cores={cores} → full model"
+    elif ram >= 2.0 or cores >= 2:
+        return "medium", "medium", f"RAM={ram:.1f}GB cores={cores} → medium model"
+    else:
+        return "low",    "small",  f"RAM={ram:.1f}GB cores={cores} → small model"
 
 
-# ---------------------------------------------------------------------------
-# Adaptive Inference Engine
-# ---------------------------------------------------------------------------
+# ── model loader (used when doing inference, not training) ────────────────────
 
-class AdaptiveInferenceEngine:
+def load_model_for_tier(variant):
+    """Loads the appropriate model and returns it in eval mode."""
+    import torch
+    from model import get_model
+    model = get_model(variant)
+    model.eval()
+    return model
+
+
+# ── split inference demo ──────────────────────────────────────────────────────
+
+def demo_split_inference():
     """
-    High-level inference engine that:
-      1. Profiles the device.
-      2. Selects the appropriate model.
-      3. Loads trained weights (if provided).
-      4. Runs benchmarks.
-      5. Exposes a simple predict() method.
+    Demonstrates hybrid parallelism:
+    The device part runs locally, then the 128-d feature vector
+    would be sent to the server for the final classification.
+    (Here we run both parts locally to demo the concept.)
     """
+    import torch
+    from model import get_split_model, FEATURE_DIM
 
-    def __init__(
-        self,
-        weights: Optional[list] = None,
-        force_tier: Optional[str] = None,
-        device: str = "cpu",
-    ):
-        self.device = device
+    print("\n[split inference demo]")
+    device_part, server_part = get_split_model()
+    device_part.eval()
+    server_part.eval()
 
-        # 1. Profile
-        self.profile  = (DeviceProfiler.simulate(force_tier)
-                         if force_tier else DeviceProfiler.profile())
+    # Simulate a single input image
+    x = torch.randn(1, 1, 28, 28)
 
-        # 2. Select model
-        self.variant  = ModelSelector.select(self.profile)
-        self.model    = get_model(self.variant).to(device)
+    with torch.no_grad():
+        feature_vec = device_part(x)
+        print(f"  Device part output : {feature_vec.shape}  "
+              f"(this is what gets sent over WiFi)")
+        print(f"  Feature vector size: {feature_vec.numel() * 4} bytes  "
+              f"vs raw image: {x.numel() * 4} bytes")
+        compression = x.numel() / feature_vec.numel()
+        print(f"  Data reduction     : {compression:.1f}×")
 
-        # 3. Load weights
-        if weights is not None:
-            keys  = list(self.model.state_dict().keys())
-            state = {k: torch.tensor(w)
-                     for k, w in zip(keys, weights)}
-            self.model.load_state_dict(state, strict=True)
-            print(f"[Engine] Loaded federated weights into {self.variant} model.")
-
-        self.model.eval()
-
-        # 4. Benchmark
-        bench = LatencyBenchmarker()
-        self.bench_results = bench.benchmark(self.model, device)
-
-    def predict(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Parameters
-        ----------
-        x : Tensor of shape (N, 1, 28, 28)
-
-        Returns
-        -------
-        probs  : softmax probabilities (N, 10)
-        labels : predicted class indices (N,)
-        """
-        x = x.to(self.device)
-        with torch.no_grad():
-            logits = self.model(x)
-            probs  = torch.softmax(logits, dim=-1)
-            labels = probs.argmax(dim=-1)
-        return probs, labels
-
-    def report(self) -> str:
-        b = self.bench_results
-        lines = [
-            "\n" + "─" * 50,
-            " ADAPTIVE INFERENCE ENGINE REPORT",
-            "─" * 50,
-            self.profile.summary(),
-            ModelSelector.explain(self.profile),
-            "Latency Benchmark",
-            f"  Mean latency : {b['mean_latency_ms']} ms",
-            f"  P95  latency : {b['p95_latency_ms']}  ms",
-            f"  P99  latency : {b['p99_latency_ms']}  ms",
-            f"  Throughput   : {b['throughput_fps']} FPS",
-            "─" * 50,
-        ]
-        return "\n".join(lines)
+        logits = server_part(feature_vec)
+        pred   = logits.argmax(dim=1).item()
+        print(f"  Server part output : {logits.shape}  predicted class: {pred}")
 
 
-# ---------------------------------------------------------------------------
-# Demo
-# ---------------------------------------------------------------------------
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Adaptive model tier selector")
+    parser.add_argument("--server",      type=str, default="192.168.1.100:8080")
+    parser.add_argument("--client_id",   type=int, default=0)
+    parser.add_argument("--num_clients", type=int, default=5)
+    parser.add_argument("--alpha",       type=float, default=0.5)
+    parser.add_argument("--epochs",      type=int, default=3)
+    parser.add_argument("--demo_split",  action="store_true",
+                        help="Run the split inference demo")
+    args = parser.parse_args()
+
+    print("=" * 55)
+    print("  Adaptive serving — device profiler")
+    print("=" * 55)
+
+    info = profile_device()
+    print(f"\n  Platform   : {info['platform']} {info['machine']}")
+    print(f"  Python     : {info['python']}")
+    print(f"  CPU cores  : {info['cpu_cores']}")
+    print(f"  RAM        : {info['ram_gb']:.2f} GB")
+    print(f"  CPU freq   : {info['cpu_freq_mhz']:.0f} MHz")
+
+    tier, variant, reason = assign_tier(info)
+    print(f"\n  Assigned tier  : {tier.upper()}")
+    print(f"  Model variant  : {variant}")
+    print(f"  Reason         : {reason}")
+
+    print("\n" + "=" * 55)
+    print("  Run this command to start your Flower client:")
+    print("=" * 55)
+    cmd = (
+        f"python client.py "
+        f"--server {args.server} "
+        f"--client_id {args.client_id} "
+        f"--num_clients {args.num_clients} "
+        f"--variant {variant} "
+        f"--epochs {args.epochs} "
+        f"--alpha {args.alpha}"
+    )
+    print(f"\n  {cmd}\n")
+
+    # Optionally run split inference demo
+    if args.demo_split:
+        demo_split_inference()
+
+    return variant, cmd
+
 
 if __name__ == "__main__":
-    for tier in ("high", "medium", "low"):
-        engine = AdaptiveInferenceEngine(force_tier=tier)
-        print(engine.report())
-
-        dummy = torch.zeros(4, 1, 28, 28)
-        probs, preds = engine.predict(dummy)
-        print(f"  Sample predictions: {preds.tolist()}\n")
+    main()

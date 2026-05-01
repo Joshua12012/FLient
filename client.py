@@ -1,195 +1,210 @@
 """
-client.py
----------
-Flower FL Client – simulates an edge / mobile device.
+client.py  —  Flower edge client
+Works identically on:
+  • Android phones via Termux
+  • Simulated clients on a PC
 
-Each client:
-  1. Receives the global model weights from the server.
-  2. Trains locally on its private, non-IID data shard.
-  3. Sends back the updated weights (no raw data ever leaves the device).
+Usage (phone / Termux):
+    python client.py --server 192.168.1.100:8080 --client_id 0 --num_clients 10
 
-Additional realism:
-  - Simulated bandwidth limit  : large weight tensors are "sent" with a
-    configurable artificial delay (bandwidth_mbps param).
-  - Local epochs configurable  : devices with more compute can do more
-    local steps before syncing.
-  - Stragglers                 : a small random extra delay can be injected
-    to mimic heterogeneous device speeds.
+Usage (simulated on PC — run multiple times with different client_id):
+    python client.py --server 127.0.0.1:8080 --client_id 2 --num_clients 10 --simulate
+
+Edge-realism features included:
+  • Straggler delay simulation
+  • Bandwidth-limited upload simulation
+  • Per-round metrics: train_loss, train_time, upload_kb
 """
 
+import argparse
 import time
+import random
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from typing import Dict, List, Tuple
-
 import flwr as fl
-from flwr.common import (
-    FitIns, FitRes, EvaluateIns, EvaluateRes,
-    Parameters, NDArrays, Scalar, ndarrays_to_parameters,
-    parameters_to_ndarrays,
-)
+from collections import OrderedDict
 
-from model import get_model
+from model import get_model, NUM_CLASSES
+from data_utils import get_single_client_loader
 
 
-# ---------------------------------------------------------------------------
-# Helper: convert model weights ↔ Flower Parameters
-# ---------------------------------------------------------------------------
+# ── parameter helpers ─────────────────────────────────────────────────────────
 
-def get_parameters(model: nn.Module) -> NDArrays:
-    return [val.cpu().numpy() for val in model.state_dict().values()]
+def get_parameters(model):
+    return [val.cpu().numpy() for _, val in model.state_dict().items()]
 
 
-def set_parameters(model: nn.Module, parameters: NDArrays) -> None:
-    keys   = list(model.state_dict().keys())
-    params = {k: torch.tensor(v) for k, v in zip(keys, parameters)}
-    model.load_state_dict(params, strict=True)
+def set_parameters(model, parameters):
+    params_dict = zip(model.state_dict().keys(), parameters)
+    state_dict  = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
+    model.load_state_dict(state_dict, strict=True)
 
 
-# ---------------------------------------------------------------------------
-# EdgeClient
-# ---------------------------------------------------------------------------
+# ── upload size estimator ─────────────────────────────────────────────────────
 
-class EdgeClient(fl.client.NumPyClient):
-    """
-    Flower NumpyClient representing a single edge device.
+def estimate_upload_kb(model):
+    """Approximates the size of model weights if sent over the wire (float32)."""
+    total_bytes = sum(p.numel() * 4 for p in model.parameters())
+    return total_bytes / 1024
 
-    Parameters
-    ----------
-    client_id     : int   – unique device identifier
-    train_loader  : DataLoader – local training data (non-IID shard)
-    test_loader   : DataLoader – global test set (for evaluation)
-    model_variant : str   – "large" | "medium" | "small"
-    local_epochs  : int   – local training iterations before upload
-    lr            : float – local SGD learning rate
-    bandwidth_mbps: float – simulated upload bandwidth (MB/s); None = instant
-    straggler_prob: float – probability of extra 1-2 s delay
-    device        : str   – "cpu" or "cuda"
-    """
 
-    def __init__(
-        self,
-        client_id: int,
-        train_loader: DataLoader,
-        test_loader: DataLoader,
-        model_variant: str = "large",
-        local_epochs: int = 3,
-        lr: float = 0.01,
-        bandwidth_mbps: float = None,
-        straggler_prob: float = 0.1,
-        device: str = "cpu",
-    ):
+# ── Flower client ─────────────────────────────────────────────────────────────
+
+class FEMNISTClient(fl.client.NumPyClient):
+
+    def __init__(self, client_id, num_clients, variant, alpha,
+                 bandwidth_mbps, straggler, epochs, batch_size, simulate):
         self.client_id      = client_id
-        self.train_loader   = train_loader
-        self.test_loader    = test_loader
-        self.local_epochs   = local_epochs
-        self.lr             = lr
+        self.variant        = variant
         self.bandwidth_mbps = bandwidth_mbps
-        self.straggler_prob = straggler_prob
-        self.device_str     = device
-        self.torch_device   = torch.device(device)
+        self.straggler      = straggler
+        self.epochs         = epochs
+        self.simulate       = simulate
+        self.device         = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.model = get_model(model_variant).to(self.torch_device)
-        self.model_variant  = model_variant
+        # Load this client's shard of FEMNIST
+        print(f"[client {client_id}] Loading FEMNIST shard…")
+        self.train_loader, self.test_loader, _ = get_single_client_loader(
+            client_id=client_id,
+            num_clients=num_clients,
+            batch_size=batch_size,
+            alpha=alpha,
+        )
+        print(f"[client {client_id}] Shard size: {len(self.train_loader.dataset)} samples")
 
-        # Metrics logged locally
-        self.round_metrics: List[Dict] = []
+        self.model     = get_model(variant).to(self.device)
+        self.criterion = nn.CrossEntropyLoss()
 
-    # ------------------------------------------------------------------
-    # Flower API
-    # ------------------------------------------------------------------
+    # ── Flower API ──────────────────────────────────────────────────────────
 
-    def get_parameters(self, config: Dict) -> NDArrays:
+    def get_parameters(self, config):
         return get_parameters(self.model)
 
-    def fit(self, parameters: NDArrays, config: Dict) -> Tuple[NDArrays, int, Dict]:
-        """Local training step."""
-        # 1. Sync with global model
+    def fit(self, parameters, config):
+        # 1. Sync global weights
         set_parameters(self.model, parameters)
 
-        # 2. Straggler simulation
-        if np.random.rand() < self.straggler_prob:
-            delay = np.random.uniform(0.5, 1.5)
+        # 2. Simulate straggler delay (slow phones finish later)
+        if self.straggler:
+            delay = random.uniform(1.0, 5.0)
+            print(f"[client {self.client_id}] Straggler delay: {delay:.1f}s")
             time.sleep(delay)
 
         # 3. Local training
-        t0 = time.perf_counter()
-        train_loss = self._train(self.local_epochs)
-        train_time = time.perf_counter() - t0
+        t0 = time.time()
+        train_loss = self._train(self.epochs)
+        train_time = time.time() - t0
 
-        # 4. Bandwidth simulation  (upload delay)
-        updated_params = get_parameters(self.model)
-        upload_bytes   = sum(w.nbytes for w in updated_params)
-        upload_time    = 0.0
-        if self.bandwidth_mbps:
-            upload_time = upload_bytes / (self.bandwidth_mbps * 1e6)
-            time.sleep(upload_time)
+        # 4. Simulate upload delay based on bandwidth
+        upload_kb = estimate_upload_kb(self.model)
+        if self.simulate:
+            upload_delay = (upload_kb / 1024) / self.bandwidth_mbps
+            time.sleep(upload_delay)
 
-        metrics: Dict[str, Scalar] = {
-            "client_id":   self.client_id,
+        print(
+            f"[client {self.client_id}] "
+            f"loss={train_loss:.4f}  "
+            f"time={train_time:.1f}s  "
+            f"upload={upload_kb:.1f} KB"
+        )
+
+        metrics = {
             "train_loss":  float(train_loss),
-            "train_time":  round(train_time, 4),
-            "upload_kb":   round(upload_bytes / 1024, 1),
-            "upload_time": round(upload_time, 4),
-            "model_variant": self.model_variant,
+            "train_time":  float(train_time),
+            "upload_kb":   float(upload_kb),
+            "client_id":   float(self.client_id),
         }
+        return get_parameters(self.model), len(self.train_loader.dataset), metrics
 
-        self.round_metrics.append(metrics)
-        return updated_params, len(self.train_loader.dataset), metrics
-
-    def evaluate(self, parameters: NDArrays, config: Dict) -> Tuple[float, int, Dict]:
-        """Evaluate global model on local test set."""
+    def evaluate(self, parameters, config):
         set_parameters(self.model, parameters)
         loss, accuracy = self._evaluate()
-        return float(loss), len(self.test_loader.dataset), {
-            "accuracy": float(accuracy),
-            "client_id": self.client_id,
-        }
+        return float(loss), len(self.test_loader.dataset), {"accuracy": float(accuracy)}
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    # ── internal helpers ────────────────────────────────────────────────────
 
-    def _train(self, epochs: int) -> float:
+    def _train(self, epochs):
         self.model.train()
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.SGD(self.model.parameters(), lr=self.lr, momentum=0.9)
-
+        optimizer = torch.optim.SGD(
+            self.model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4
+        )
         total_loss = 0.0
-        total_batches = 0
-        for _ in range(epochs):
-            for images, labels in self.train_loader:
-                images = images.to(self.torch_device)
-                labels = labels.to(self.torch_device)
+        total_samples = 0
+        for epoch in range(epochs):
+            for x, y in self.train_loader:
+                x, y = x.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
-                outputs = self.model(images)
-                loss    = criterion(outputs, labels)
+                out  = self.model(x)
+                loss = self.criterion(out, y)
                 loss.backward()
                 optimizer.step()
-                total_loss   += loss.item()
-                total_batches += 1
+                total_loss    += loss.item() * x.size(0)
+                total_samples += x.size(0)
+        return total_loss / max(total_samples, 1)
 
-        return total_loss / max(total_batches, 1)
-
-    def _evaluate(self) -> Tuple[float, float]:
+    def _evaluate(self):
         self.model.eval()
-        criterion = nn.CrossEntropyLoss()
         total_loss, correct, total = 0.0, 0, 0
-
         with torch.no_grad():
-            for images, labels in self.test_loader:
-                images = images.to(self.torch_device)
-                labels = labels.to(self.torch_device)
-                outputs  = self.model(images)
-                loss     = criterion(outputs, labels)
-                total_loss += loss.item()
-                _, preds = outputs.max(1)
-                correct  += (preds == labels).sum().item()
-                total    += labels.size(0)
+            for x, y in self.test_loader:
+                x, y = x.to(self.device), y.to(self.device)
+                out   = self.model(x)
+                loss  = self.criterion(out, y)
+                total_loss += loss.item() * x.size(0)
+                pred        = out.argmax(dim=1)
+                correct    += pred.eq(y).sum().item()
+                total      += x.size(0)
+        return total_loss / max(total, 1), correct / max(total, 1)
 
-        avg_loss = total_loss / len(self.test_loader)
-        accuracy = correct / total
-        return avg_loss, accuracy
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Flower FEMNIST Edge Client")
+    parser.add_argument("--server",       type=str,   default="127.0.0.1:8080",
+                        help="Server IP:port (use your laptop IP on WiFi)")
+    parser.add_argument("--client_id",    type=int,   default=0,
+                        help="Unique ID for this client (0, 1, 2, …)")
+    parser.add_argument("--num_clients",  type=int,   default=5,
+                        help="Total number of clients (must match server)")
+    parser.add_argument("--variant",      type=str,   default="large",
+                        choices=["large","medium","small"],
+                        help="Model size (adaptive_serving.py picks this automatically)")
+    parser.add_argument("--epochs",       type=int,   default=3,
+                        help="Local epochs per round")
+    parser.add_argument("--batch_size",   type=int,   default=32)
+    parser.add_argument("--alpha",        type=float, default=0.5,
+                        help="Dirichlet alpha (must match server)")
+    parser.add_argument("--bandwidth",    type=float, default=10.0,
+                        help="Simulated bandwidth in Mbps (for upload delay)")
+    parser.add_argument("--straggler",    action="store_true",
+                        help="Enable random straggler delay")
+    parser.add_argument("--simulate",     action="store_true",
+                        help="Enable simulated upload delay (for PC clients)")
+    args = parser.parse_args()
+
+    print(f"[client {args.client_id}] Connecting to server at {args.server}")
+    print(f"  variant={args.variant}  epochs={args.epochs}  "
+          f"batch_size={args.batch_size}  alpha={args.alpha}")
+
+    client = FEMNISTClient(
+        client_id     = args.client_id,
+        num_clients   = args.num_clients,
+        variant       = args.variant,
+        alpha         = args.alpha,
+        bandwidth_mbps= args.bandwidth,
+        straggler     = args.straggler,
+        epochs        = args.epochs,
+        batch_size    = args.batch_size,
+        simulate      = args.simulate,
+    )
+
+    fl.client.start_numpy_client(
+        server_address=args.server,
+        client=client,
+    )
+
+
+if __name__ == "__main__":
+    main()

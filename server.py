@@ -1,214 +1,183 @@
 """
-server.py
----------
-Federated Learning Server using Flower's strategy API.
+server.py  —  Flower FedAvg server with per-round logging
+Run this on your LAPTOP before starting any clients.
 
-Strategy: Custom FedAvg (Federated Averaging – McMahan et al. 2017)
-  - Aggregates client weight updates by weighted average
-    (weight ∝ number of local samples).
-  - Logs per-round metrics for the communication analysis module.
-  - Supports optional server-side model evaluation.
+Usage:
+    python server.py --rounds 20 --clients 5 --variant large
 
-Communication round tracking:
-  Every round the server records:
-    • wall-clock time
-    • aggregated loss / accuracy reported by clients
-    • number of clients that participated
-    • total bytes exchanged (estimated from weight sizes)
+The server:
+  1. Broadcasts the initial global model to all clients
+  2. Waits for client updates each round
+  3. Aggregates with FedAvg
+  4. Evaluates on global test set
+  5. Saves round_log.json  (accuracy, loss, upload KB per round)
 """
 
-import time
+import argparse
 import json
-from typing import Dict, List, Optional, Tuple
-from pathlib import Path
-
+import time
 import numpy as np
 import torch
 import flwr as fl
-from flwr.common import (
-    FitRes, Parameters, Scalar, NDArrays,
-    ndarrays_to_parameters, parameters_to_ndarrays,
-    EvaluateRes,
-)
-from flwr.server.client_proxy import ClientProxy
+from flwr.common import Metrics, Parameters, ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server.strategy import FedAvg
+from typing import List, Tuple, Optional, Dict, Union
+from collections import OrderedDict
 
-from model import get_model
-
-
-# ---------------------------------------------------------------------------
-# Communication-round logger
-# ---------------------------------------------------------------------------
-
-class RoundLogger:
-    """Accumulates per-round metrics; can be serialised to JSON."""
-
-    def __init__(self):
-        self.rounds: List[Dict] = []
-        self._start: float = time.perf_counter()
-
-    def log(self, rnd: int, **kwargs):
-        entry = {
-            "round":    rnd,
-            "elapsed_s": round(time.perf_counter() - self._start, 3),
-            **kwargs,
-        }
-        self.rounds.append(entry)
-        return entry
-
-    def save(self, path: str):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(self.rounds, f, indent=2)
-        print(f"[Logger] Saved round log → {path}")
+from model import get_model, NUM_CLASSES
+from data_utils import get_client_loaders   # server uses test set for global eval
 
 
-# ---------------------------------------------------------------------------
-# Custom FedAvg Strategy
-# ---------------------------------------------------------------------------
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-class EdgeFedAvg(FedAvg):
-    """
-    Extends Flower's FedAvg with:
-      1. Per-round logging (loss, accuracy, clients, bytes).
-      2. Server-side global evaluation after every round.
-      3. Printing a clear progress banner to stdout.
-    """
-
-    def __init__(self, logger: RoundLogger, eval_fn, model_variant: str = "large", **kwargs):
-        super().__init__(**kwargs)
-        self.logger        = logger
-        self.eval_fn       = eval_fn          # callable(weights) → (loss, accuracy)
-        self.model_variant = model_variant
-
-    # ------------------------------------------------------------------
-    # Aggregate FIT results
-    # ------------------------------------------------------------------
-
-    def aggregate_fit(
-        self,
-        server_round: int,
-        results: List[Tuple[ClientProxy, FitRes]],
-        failures,
-    ) -> Tuple[Optional[Parameters], Dict[str, Scalar]]:
-
-        # Standard FedAvg aggregation
-        aggregated_params, metrics = super().aggregate_fit(
-            server_round, results, failures
-        )
-
-        if aggregated_params is None:
-            return aggregated_params, metrics
-
-        # ---- Collect per-client metrics from this round ---------------
-        train_losses  = []
-        upload_kbs    = []
-        num_examples  = []
-
-        for _, fit_res in results:
-            m = fit_res.metrics or {}
-            if "train_loss" in m:
-                train_losses.append(float(m["train_loss"]))
-            if "upload_kb" in m:
-                upload_kbs.append(float(m["upload_kb"]))
-            num_examples.append(fit_res.num_examples)
-
-        avg_train_loss  = float(np.mean(train_losses))   if train_losses else 0.0
-        total_upload_kb = float(np.sum(upload_kbs))       if upload_kbs  else 0.0
-
-        # ---- Server-side global evaluation ----------------------------
-        weights = parameters_to_ndarrays(aggregated_params)
-        server_loss, server_acc = self.eval_fn(weights)
-
-        # ---- Log round ------------------------------------------------
-        entry = self.logger.log(
-            server_round,
-            num_clients      = len(results),
-            avg_train_loss   = round(avg_train_loss, 5),
-            server_loss      = round(server_loss, 5),
-            server_accuracy  = round(server_acc, 5),
-            total_upload_kb  = round(total_upload_kb, 2),
-            total_samples    = int(np.sum(num_examples)),
-        )
-
-        # ---- Banner ---------------------------------------------------
-        banner = (
-            f"\n{'='*62}\n"
-            f"  Round {server_round:>3}  |  Clients: {len(results)}  |  "
-            f"Upload: {total_upload_kb:.1f} KB\n"
-            f"  Train Loss: {avg_train_loss:.4f}  |  "
-            f"Server Loss: {server_loss:.4f}  |  "
-            f"Server Acc: {server_acc*100:.2f}%\n"
-            f"{'='*62}"
-        )
-        print(banner)
-
-        return aggregated_params, {
-            "server_loss":     server_loss,
-            "server_accuracy": server_acc,
-        }
-
-    # ------------------------------------------------------------------
-    # Aggregate EVALUATE results
-    # ------------------------------------------------------------------
-
-    def aggregate_evaluate(
-        self,
-        server_round: int,
-        results: List[Tuple[ClientProxy, EvaluateRes]],
-        failures,
-    ) -> Tuple[Optional[float], Dict[str, Scalar]]:
-        if not results:
-            return None, {}
-
-        total_examples = sum(r.num_examples for _, r in results)
-        weighted_loss  = sum(
-            r.num_examples * r.loss for _, r in results
-        ) / total_examples
-        weighted_acc   = sum(
-            r.num_examples * (r.metrics.get("accuracy", 0.0))
-            for _, r in results
-        ) / total_examples
-
-        return float(weighted_loss), {
-            "accuracy":    float(weighted_acc),
-        }
+def get_parameters(model):
+    return [val.cpu().numpy() for _, val in model.state_dict().items()]
 
 
-# ---------------------------------------------------------------------------
-# Server-side evaluation function factory
-# ---------------------------------------------------------------------------
+def set_parameters(model, parameters):
+    params_dict = zip(model.state_dict().keys(), parameters)
+    state_dict  = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
+    model.load_state_dict(state_dict, strict=True)
 
-def make_eval_fn(test_loader, model_variant: str = "large", device: str = "cpu"):
-    """
-    Returns a callable that loads `weights` into a fresh model and
-    evaluates it on the held-out test set.
-    """
-    import torch.nn as nn
 
-    torch_device = torch.device(device)
+def evaluate_global(model, test_loader, device="cpu"):
+    model.eval()
+    model.to(device)
+    criterion = torch.nn.CrossEntropyLoss()
+    total_loss, correct, total = 0.0, 0, 0
+    with torch.no_grad():
+        for x, y in test_loader:
+            x, y = x.to(device), y.to(device)
+            out   = model(x)
+            loss  = criterion(out, y)
+            total_loss += loss.item() * x.size(0)
+            pred        = out.argmax(dim=1)
+            correct    += pred.eq(y).sum().item()
+            total      += x.size(0)
+    return total_loss / total, correct / total
 
-    def evaluate(weights: NDArrays) -> Tuple[float, float]:
-        model = get_model(model_variant).to(torch_device)
-        keys  = list(model.state_dict().keys())
-        state = {k: torch.tensor(w) for k, w in zip(keys, weights)}
-        model.load_state_dict(state, strict=True)
-        model.eval()
 
-        criterion  = nn.CrossEntropyLoss()
-        total_loss = 0.0
-        correct, total = 0, 0
+# ── logging strategy ──────────────────────────────────────────────────────────
 
-        with torch.no_grad():
-            for images, labels in test_loader:
-                images, labels = images.to(torch_device), labels.to(torch_device)
-                outputs  = model(images)
-                loss     = criterion(outputs, labels)
-                total_loss += loss.item()
-                _, preds = outputs.max(1)
-                correct  += (preds == labels).sum().item()
-                total    += labels.size(0)
+class LoggingFedAvg(FedAvg):
+    """FedAvg + per-round logging to round_log.json."""
 
-        return total_loss / len(test_loader), correct / total
+    def __init__(self, *args, variant="large", test_loader=None, device="cpu", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.variant     = variant
+        self.test_loader = test_loader
+        self.device      = device
+        self.round_log   = []
+        self.start_time  = time.time()
 
-    return evaluate
+    def aggregate_fit(self, server_round, results, failures):
+        aggregated = super().aggregate_fit(server_round, results, failures)
+
+        # Collect metrics from clients
+        if results:
+            train_losses = [r.metrics.get("train_loss", 0.0) for _, r in results]
+            train_times  = [r.metrics.get("train_time", 0.0) for _, r in results]
+            upload_kbs   = [r.metrics.get("upload_kb",  0.0) for _, r in results]
+
+            # Server-side global eval
+            if aggregated[0] is not None and self.test_loader is not None:
+                model = get_model(self.variant)
+                params = parameters_to_ndarrays(aggregated[0])
+                set_parameters(model, params)
+                s_loss, s_acc = evaluate_global(model, self.test_loader, self.device)
+            else:
+                s_loss, s_acc = 0.0, 0.0
+
+            entry = {
+                "round":            server_round,
+                "elapsed_s":        round(time.time() - self.start_time, 2),
+                "num_clients":      len(results),
+                "avg_train_loss":   float(np.mean(train_losses)),
+                "avg_train_time_s": float(np.mean(train_times)),
+                "total_upload_kb":  float(np.sum(upload_kbs)),
+                "server_loss":      float(s_loss),
+                "server_accuracy":  float(s_acc),
+            }
+            self.round_log.append(entry)
+
+            print(
+                f"[Round {server_round:3d}]  "
+                f"clients={len(results)}  "
+                f"train_loss={entry['avg_train_loss']:.4f}  "
+                f"server_acc={s_acc:.4f}  "
+                f"upload={entry['total_upload_kb']:.1f} KB"
+            )
+
+            # Save after every round so it's never lost
+            with open("round_log.json", "w") as f:
+                json.dump(self.round_log, f, indent=2)
+
+        return aggregated
+
+    def aggregate_evaluate(self, server_round, results, failures):
+        return super().aggregate_evaluate(server_round, results, failures)
+
+
+# ── weighted-average metric aggregation helpers ───────────────────────────────
+
+def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
+    total = sum(n for n, _ in metrics)
+    agg   = {}
+    for n, m in metrics:
+        for k, v in m.items():
+            agg[k] = agg.get(k, 0.0) + v * n / total
+    return agg
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Flower Federated Learning Server")
+    parser.add_argument("--rounds",   type=int, default=20,    help="Number of FL rounds")
+    parser.add_argument("--clients",  type=int, default=5,     help="Min clients per round")
+    parser.add_argument("--variant",  type=str, default="large", choices=["large","medium","small"])
+    parser.add_argument("--port",     type=int, default=8080,  help="gRPC port")
+    parser.add_argument("--alpha",    type=float, default=0.5, help="Dirichlet alpha for data split")
+    args = parser.parse_args()
+
+    print(f"[server] Starting Flower server")
+    print(f"         model variant : {args.variant}")
+    print(f"         FL rounds     : {args.rounds}")
+    print(f"         min clients   : {args.clients}")
+    print(f"         port          : {args.port}")
+    print(f"         Dirichlet α   : {args.alpha}")
+    print()
+
+    # Load test set for global evaluation after each round
+    _, test_loader, _ = get_client_loaders(
+        num_clients=args.clients, batch_size=256, alpha=args.alpha
+    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Initial model parameters broadcast to clients
+    init_model  = get_model(args.variant)
+    init_params = ndarrays_to_parameters(get_parameters(init_model))
+
+    strategy = LoggingFedAvg(
+        fraction_fit=1.0,                      # use ALL available clients each round
+        fraction_evaluate=0.0,                  # server does its own eval
+        min_fit_clients=args.clients,
+        min_available_clients=args.clients,
+        initial_parameters=init_params,
+        fit_metrics_aggregation_fn=weighted_average,
+        variant=args.variant,
+        test_loader=test_loader,
+        device=device,
+    )
+
+    fl.server.start_server(
+        server_address=f"0.0.0.0:{args.port}",
+        config=fl.server.ServerConfig(num_rounds=args.rounds),
+        strategy=strategy,
+    )
+
+    print("\n[server] Training complete. Round log saved to round_log.json")
+
+
+if __name__ == "__main__":
+    main()

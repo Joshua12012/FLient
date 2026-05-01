@@ -1,167 +1,210 @@
 """
-model.py
---------
-Neural network model with Hybrid Parallelism support.
+model.py  —  Three model tiers for adaptive serving + split inference
+Updated for FEMNIST: NUM_CLASSES = 62
 
-Hybrid Parallelism = Data Parallelism + Model Parallelism
-- Data Parallelism  : each client trains on its own local shard of data
-- Model Parallelism : the model itself is split into a 'feature extractor'
-                      (runs on the edge device / "device_part") and a
-                      'classifier head' (runs on the server / "server_part").
-                      In simulation we keep both on the same machine but
-                      demonstrate the split clearly.
+Tiers:
+    large   → full EdgeCNN, also split into DevicePart / ServerPart
+    medium  → lighter CNN, runs on mid-range phones
+    small   → tiny CNN for low-RAM devices
 
-Three model variants let the adaptive-serving layer pick the right size:
-  LARGE  → full EdgeCNN (for powerful devices / server)
-  MEDIUM → pruned version (mid-range devices)
-  SMALL  → tiny MLP (very constrained IoT devices)
+Split inference (hybrid parallelism):
+    EdgeCNN_DevicePart  : early layers that run ON the phone
+    EdgeCNN_ServerPart  : later layers that run on the server
+    The phone sends a 128-d feature vector, not raw pixels, to the server.
+    This is your "model parallelism" + communication efficiency story.
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+NUM_CLASSES   = 62   # FEMNIST: digits + upper + lower
+FEATURE_DIM   = 128  # size of the intermediate feature vector sent over the wire
 
 
-# ---------------------------------------------------------------------------
-# 1. Full EdgeCNN – split into two parts for model parallelism
-# ---------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
+# LARGE MODEL — split into device + server parts
+# ══════════════════════════════════════════════════════════════════════════════
 
 class EdgeCNN_DevicePart(nn.Module):
     """
-    Feature extractor that lives on the EDGE DEVICE.
-    Receives raw input (1×28×28 for MNIST) and outputs a compact feature
-    vector.  In a real deployment this runs on-device; only the small
-    feature vector is transmitted to the server.
+    Runs on the edge device (phone).
+    Input : (B, 1, 28, 28) grayscale image
+    Output: (B, 128) feature vector  ← this is what gets sent to the server
     """
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)   # 28×28→28×28
-        self.pool  = nn.MaxPool2d(2, 2)                             # →14×14
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)   # →14×14
-        # After second pool: 7×7  → flatten → 32×7×7 = 1568 → fc → 128
-        self.fc    = nn.Linear(32 * 7 * 7, 128)
+        self.features = nn.Sequential(
+            # Block 1
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),   # → (B,32,28,28)
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),  # → (B,32,28,28)
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),                               # → (B,32,14,14)
+            nn.Dropout2d(0.1),
+
+            # Block 2
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # → (B,64,14,14)
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),  # → (B,64,14,14)
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),                               # → (B,64,7,7)
+            nn.Dropout2d(0.1),
+        )
+        self.flatten  = nn.Flatten()                       # → (B, 64*7*7=3136)
+        self.compress = nn.Sequential(
+            nn.Linear(64 * 7 * 7, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, FEATURE_DIM),                  # → (B, 128)
+            nn.ReLU(inplace=True),
+        )
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = self.pool(x)
-        x = F.relu(self.conv2(x))
-        x = self.pool(x)
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc(x))
-        return x          # shape: (batch, 128)
+        x = self.features(x)
+        x = self.flatten(x)
+        x = self.compress(x)
+        return x                                           # (B, 128)
 
 
 class EdgeCNN_ServerPart(nn.Module):
     """
-    Classifier head that lives on the SERVER (or a more powerful node).
-    Receives the 128-d feature vector and produces class logits.
+    Runs on the server after receiving the 128-d feature vector.
+    Input : (B, 128) feature vector from device
+    Output: (B, 62) class logits
     """
-    def __init__(self, num_classes: int = 10):
+    def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(128, 64)
-        self.fc2 = nn.Linear(64, num_classes)
+        self.classifier = nn.Sequential(
+            nn.Linear(FEATURE_DIM, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.4),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, NUM_CLASSES),                  # → (B, 62)
+        )
 
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)   # logits
+    def forward(self, features):
+        return self.classifier(features)
 
 
-class EdgeCNN_Full(nn.Module):
+class EdgeCNN_Large(nn.Module):
     """
-    Convenience wrapper that chains both parts.
-    Used when running the full model locally (federated simulation).
+    Combines both parts for standard federated training
+    (no split — full model on one machine).
     """
-    def __init__(self, num_classes: int = 10):
+    def __init__(self):
         super().__init__()
         self.device_part = EdgeCNN_DevicePart()
-        self.server_part = EdgeCNN_ServerPart(num_classes)
+        self.server_part = EdgeCNN_ServerPart()
 
     def forward(self, x):
         features = self.device_part(x)
         return self.server_part(features)
 
-    # ---- helpers used by Flower clients --------------------------------
-    def get_weights(self):
-        return [p.data.cpu().numpy() for p in self.parameters()]
 
-    def set_weights(self, weights):
-        for p, w in zip(self.parameters(), weights):
-            p.data = torch.tensor(w, dtype=p.dtype)
-
-
-# ---------------------------------------------------------------------------
-# 2. Medium model – for mid-tier edge devices
-# ---------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
+# MEDIUM MODEL — mid-range phones (2–4 GB RAM)
+# ══════════════════════════════════════════════════════════════════════════════
 
 class EdgeCNN_Medium(nn.Module):
-    def __init__(self, num_classes: int = 10):
+    """
+    Lighter model: fewer filters, no BatchNorm, single FC layer.
+    ~3× fewer parameters than large.
+    """
+    def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv2d(1, 8, kernel_size=3, padding=1)
-        self.pool  = nn.MaxPool2d(2, 2)
-        self.fc1   = nn.Linear(8 * 14 * 14, 64)
-        self.fc2   = nn.Linear(64, num_classes)
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, padding=1),   # → (B,16,28,28)
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),                               # → (B,16,14,14)
+
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),  # → (B,32,14,14)
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),                               # → (B,32,7,7)
+
+            nn.Flatten(),                                  # → (B, 32*7*7=1568)
+            nn.Linear(32 * 7 * 7, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, NUM_CLASSES),                  # → (B, 62)
+        )
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = self.pool(x)
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
-
-    def get_weights(self):
-        return [p.data.cpu().numpy() for p in self.parameters()]
-
-    def set_weights(self, weights):
-        for p, w in zip(self.parameters(), weights):
-            p.data = torch.tensor(w, dtype=p.dtype)
+        return self.net(x)
 
 
-# ---------------------------------------------------------------------------
-# 3. Small / Tiny model – for severely constrained IoT devices
-# ---------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
+# SMALL MODEL — low-end phones (<2 GB RAM)
+# ══════════════════════════════════════════════════════════════════════════════
 
 class EdgeCNN_Small(nn.Module):
-    def __init__(self, num_classes: int = 10):
+    """
+    Minimal model: single conv block + one FC.
+    Fast to train even on weak CPUs.
+    """
+    def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(28 * 28, 64)
-        self.fc2 = nn.Linear(64, num_classes)
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 8, kernel_size=3, padding=1),    # → (B,8,28,28)
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(4),                               # → (B,8,7,7)
+
+            nn.Flatten(),                                  # → (B, 8*7*7=392)
+            nn.Linear(392, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(128, NUM_CLASSES),                  # → (B, 62)
+        )
 
     def forward(self, x):
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
-
-    def get_weights(self):
-        return [p.data.cpu().numpy() for p in self.parameters()]
-
-    def set_weights(self, weights):
-        for p, w in zip(self.parameters(), weights):
-            p.data = torch.tensor(w, dtype=p.dtype)
+        return self.net(x)
 
 
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
+# Factory helpers
+# ══════════════════════════════════════════════════════════════════════════════
 
-MODEL_REGISTRY = {
-    "large":  EdgeCNN_Full,
-    "medium": EdgeCNN_Medium,
-    "small":  EdgeCNN_Small,
-}
+def get_model(variant: str = "large") -> nn.Module:
+    """
+    Returns the full (non-split) model for a given variant.
+    Used by server.py and simulated clients.
+    variant: 'large' | 'medium' | 'small'
+    """
+    models = {
+        "large":  EdgeCNN_Large,
+        "medium": EdgeCNN_Medium,
+        "small":  EdgeCNN_Small,
+    }
+    if variant not in models:
+        raise ValueError(f"Unknown variant '{variant}'. Choose from {list(models)}")
+    return models[variant]()
 
-def get_model(variant: str = "large", num_classes: int = 10) -> nn.Module:
-    cls = MODEL_REGISTRY[variant]
-    return cls(num_classes=num_classes)
+
+def get_split_model():
+    """Returns (device_part, server_part) for split inference demo."""
+    return EdgeCNN_DevicePart(), EdgeCNN_ServerPart()
 
 
 def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+# ── quick sanity check ────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    for name, cls in MODEL_REGISTRY.items():
-        m = cls()
-        print(f"[{name:6s}]  params = {count_parameters(m):>8,}")
-        x = torch.zeros(4, 1, 28, 28)
-        y = m(x)
-        print(f"         output shape = {y.shape}")
+    x = torch.randn(4, 1, 28, 28)
+    for v in ["large", "medium", "small"]:
+        m = get_model(v)
+        out = m(x)
+        print(f"{v:8s}  params: {count_parameters(m):>8,}  output: {out.shape}")
+
+    print("\n--- split inference demo ---")
+    dev, srv = get_split_model()
+    feat = dev(x)
+    print(f"Device part output (feature vector): {feat.shape}")
+    logits = srv(feat)
+    print(f"Server part output (logits):         {logits.shape}")
