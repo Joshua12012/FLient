@@ -10,6 +10,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: /opt/android-sdk
+      ANDROID_HOME: /opt/android-sdk
 
     steps:
     - uses: actions/checkout@v4
@@ -51,9 +54,12 @@ jobs:
         sudo mkdir -p /opt/android-sdk/cmdline-tools
         sudo unzip commandlinetools-linux-9477386_latest.zip -d /opt/android-sdk/cmdline-tools
         sudo mv /opt/android-sdk/cmdline-tools/cmdline-tools /opt/android-sdk/cmdline-tools/latest
-        export ANDROID_SDK_ROOT=/opt/android-sdk
         export PATH=$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin
-        yes | sdkmanager --sdk_root=$ANDROID_SDK_ROOT "build-tools;34.0.0" "platform-tools" "platforms;android-34"
+        mkdir -p $ANDROID_SDK_ROOT/licenses
+        echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > $ANDROID_SDK_ROOT/licenses/android-sdk-license
+        echo "84831b9409646a918e30573bab4c9c91346d8abd" > $ANDROID_SDK_ROOT/licenses/android-sdk-preview-license
+        echo "d56f5187479451eabf01fb78af6dfcb131a6481e" > $ANDROID_SDK_ROOT/licenses/google-android-ndk-license
+        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "build-tools;34.0.0" "platform-tools" "platforms;android-34"
 
     - name: Build APK
       run: |
