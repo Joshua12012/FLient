@@ -53,22 +53,45 @@ jobs:
         pip install Cython==0.29.37
         pip install buildozer
         buildozer --version
-
-    - name: Build APK
+          - name: Build APK
       run: |
-        export JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64
+        export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
         yes | buildozer android debug 2>&1 | tee build.log
 
+    # 🔍 Find APK (debug step)
+    - name: Find APK
+      run: |
+        find . -name "*.apk"
+
+    # ✅ Copy APK to known folder
+    - name: Prepare APK
+      run: |
+        mkdir -p output
+        find . -name "*.apk" -exec cp {} output/ \;
+
+    # ✅ Upload APK (fixed)
     - name: Upload APK
       uses: actions/upload-artifact@v4
       if: success()
       with:
         name: android-apk
-        path: bin/*.apk
+        path: output/*.apk
+        
+    # - name: Build APK
+    #   run: |
+    #     export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+    #     yes | buildozer android debug 2>&1 | tee build.log
 
-    - name: Upload build log on failure
-      uses: actions/upload-artifact@v4
-      if: failure()
-      with:
-        name: build-log
-        path: build.log
+    # - name: Upload APK
+    #   uses: actions/upload-artifact@v4
+    #   if: success()
+    #   with:
+    #     name: android-apk
+    #     path: bin/*.apk
+
+    # - name: Upload build log on failure
+    #   uses: actions/upload-artifact@v4
+    #   if: failure()
+    #   with:
+    #     name: build-log
+    #     path: build.log
