@@ -17,3 +17,12 @@ psutil>=5.9.0
 # ── Visualisation (comm_analysis.py) — optional on phones ─────────────────────
 # Comment this out on Termux if install fails (comm_analysis still prints text)
 matplotlib>=3.7.0
+
+# ── Mobile GUI / optional frontend
+kivy>=2.0.0
+
+# ── Optional TensorFlow/TFLite support for mobile runtime
+# For desktop (Windows/Linux/Mac):
+# pip install tensorflow
+# For mobile runtime (Android/Raspberry Pi):
+# pip install tflite-runtime

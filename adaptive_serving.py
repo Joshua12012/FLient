@@ -80,6 +80,103 @@ def assign_tier(info):
         return "low",    "small",  f"RAM={ram:.1f}GB cores={cores} → small model"
 
 
+def benchmark_model_parts(info):
+    """
+    Benchmarks different model split points on the device.
+    Returns the optimal split point based on device performance.
+    """
+    import torch
+    import time
+    from model import EdgeCNN_DevicePart, EdgeCNN_ServerPart, EdgeCNN_Large
+
+    # Create dummy input
+    dummy_input = torch.randn(1, 1, 28, 28)
+
+    # Possible split points (layer indices)
+    split_options = [
+        ("full_local", None),  # Run everything locally
+        ("early_split", 4),    # Split after conv layers
+        ("mid_split", 8),      # Split after more layers
+        ("server_only", 0),    # Send immediately to server
+    ]
+
+    results = {}
+    for name, split_layer in split_options:
+        try:
+            # Simulate model parts
+            if split_layer is None:
+                # Full local model on the phone
+                device_model = EdgeCNN_Large()
+                server_model = None
+            elif split_layer == 0:
+                # Server-only mode: device does no feature extraction
+                device_model = None
+                server_model = EdgeCNN_ServerPart()
+            else:
+                # Partial split: device does initial feature extraction,
+                # server does final classification
+                device_model = EdgeCNN_DevicePart()
+                server_model = EdgeCNN_ServerPart()
+
+            # Benchmark device work
+            if device_model:
+                device_model.eval()
+                start = time.time()
+                with torch.no_grad():
+                    for _ in range(10):  # Multiple runs for stability
+                        _ = device_model(dummy_input)
+                device_time = (time.time() - start) / 10
+            else:
+                device_time = 0
+
+            # Estimate server time (assume network + server compute)
+            network_latency = 0.05  # 50ms network
+            server_time = 0.01 if server_model else 0  # Fast server
+
+            total_time = device_time + network_latency + server_time
+            results[name] = {
+                'device_time': device_time,
+                'total_time': total_time,
+                'split_layer': split_layer
+            }
+
+        except Exception as e:
+            results[name] = {'error': str(e)}
+
+    # Choose optimal split (minimize total time, but consider device load)
+    device_load_limit = 0.1  # Max 100ms device time
+    valid_options = [r for r in results.values() if 'error' not in r and r['device_time'] <= device_load_limit]
+
+    if valid_options:
+        optimal = min(valid_options, key=lambda x: x['total_time'])
+        return optimal
+    else:
+        # Fallback to least demanding
+        return results.get('server_only', {'split_layer': 0})
+
+
+def assign_optimized_split(info):
+    """
+    Assigns optimal model split based on device benchmarking.
+    Returns (split_config, reason)
+    """
+    benchmark_result = benchmark_model_parts(info)
+
+    if 'split_layer' in benchmark_result:
+        split_layer = benchmark_result['split_layer']
+        device_time = benchmark_result.get('device_time', 0)
+        total_time = benchmark_result.get('total_time', 0)
+
+        if split_layer is None:
+            return "full_local", f"Full model local (device: {device_time:.3f}s, total: {total_time:.3f}s)"
+        elif split_layer == 0:
+            return "server_only", f"Server only (minimal device load, total: {total_time:.3f}s)"
+        else:
+            return f"split_at_{split_layer}", f"Split at layer {split_layer} (device: {device_time:.3f}s, total: {total_time:.3f}s)"
+    else:
+        return "server_only", "Benchmark failed, using server-only mode"
+
+
 # ── model loader (used when doing inference, not training) ────────────────────
 
 def load_model_for_tier(variant):
@@ -155,6 +252,11 @@ def main():
     print(f"  Model variant  : {variant}")
     print(f"  Reason         : {reason}")
 
+    # Optimized split based on benchmarking
+    split_config, split_reason = assign_optimized_split(info)
+    print(f"\n  Optimized split: {split_config}")
+    print(f"  Split reason    : {split_reason}")
+
     print("\n" + "=" * 55)
     print("  Run this command to start your Flower client:")
     print("=" * 55)
@@ -164,6 +266,7 @@ def main():
         f"--client_id {args.client_id} "
         f"--num_clients {args.num_clients} "
         f"--variant {variant} "
+        f"--split_config {split_config} "
         f"--epochs {args.epochs} "
         f"--alpha {args.alpha}"
     )

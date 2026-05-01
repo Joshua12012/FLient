@@ -1,5 +1,6 @@
 # Federated Learning on Edge Devices
-### FEMNIST + Flower + Termux + Hybrid Parallelism
+
+### FEMNIST + Flower + Kivy GUI + Optimized Model Splitting
 
 ---
 
@@ -11,13 +12,112 @@ fl_project/
 ├── model.py             ← Large / Medium / Small CNN + split inference
 ├── server.py            ← Flower FedAvg server with round logging
 ├── client.py            ← Flower edge client (phone or PC)
-├── adaptive_serving.py  ← Device profiler → picks model tier
+├── adaptive_serving.py  ← Device profiler → picks model tier + optimized splitting
+├── kivy_client.py       ← Kivy GUI for mobile FL client
 ├── fl_runner.py         ← Single-PC end-to-end simulation
 ├── comm_analysis.py     ← Round log plotter
 ├── requirements.txt
-├── termux_setup.sh      ← Run once on each Android phone
+├── termux_setup.sh      ← Run once on each Android phone (alternative)
 └── README.md
 ```
+
+---
+
+## New Features
+
+### Kivy GUI for Mobile Clients
+
+Use the Kivy app for a phone-style interface instead of the Termux CLI.
+
+```bash
+python kivy_client.py
+```
+
+This app supports:
+
+- device profiling and tier selection
+- TFLite model loading and inference
+- optional Flower client launch from the GUI
+- status logging inside the app
+
+### Running the Kivy app
+
+1. Install Kivy and TFLite runtime dependencies:
+
+```bash
+pip install kivy
+# For Windows/Linux/Mac desktop:
+pip install tensorflow
+# For Android/Raspberry Pi mobile:
+# pip install tflite-runtime  # (if available for your platform)
+```
+
+2. Export a small TFLite model first:
+
+```bash
+python tf_model.py --variant small --output mobile_model.tflite --quantize
+```
+
+3. Start the GUI:
+
+```bash
+python kivy_client.py
+```
+
+4. Enter the model path, then press `Load Model`.
+5. Press `Run Inference` to check the mobile model.
+
+### Packaging for Android
+
+If you want a real Android app, package `kivy_client.py` with Buildozer:
+
+```bash
+git clone https://github.com/kivy/buildozer.git
+cd buildozer
+pip install -e .
+cd ../your-project
+buildozer init
+# Edit buildozer.spec to include kivy and tflite-runtime as requirements
+buildozer android debug
+```
+
+The phone can then run the generated APK without Termux.
+
+### Optimized Model Splitting
+
+The `adaptive_serving.py` now benchmarks device performance and chooses the optimal model split point to avoid overloading devices while minimizing latency.
+
+Run device profiling:
+
+```bash
+python adaptive_serving.py --server 192.168.1.100:8080 --client_id 0
+```
+
+It will output the recommended split configuration based on your device's capabilities.
+
+### TFLite Mobile Runtime (Recommended)
+
+For mobile deployment, TensorFlow Lite is a much better runtime than full PyTorch or JAX on-device.
+
+This project now includes:
+
+- `tf_model.py` — TensorFlow model definitions and TFLite export helper
+- `tflite_client.py` — lightweight TFLite client runtime skeleton
+
+Recommended workflow:
+
+1. Train or sync a small model on the server (PyTorch or TensorFlow).
+2. Export a mobile-friendly variant to `.tflite` using `tf_model.py`.
+3. Deploy the `.tflite` file to the phone and run the client with `tflite_client.py` or a Kivy wrapper.
+
+For example:
+
+```bash
+python tf_model.py --variant small --output mobile_model.tflite --quantize
+python tflite_client.py --model mobile_model.tflite
+```
+
+If you want to keep the server training path in PyTorch, use the TensorFlow/TFLite modules only for mobile inference and feature extraction. That keeps the mobile runtime light and stable.
 
 ---
 
@@ -72,11 +172,13 @@ The server waits until enough clients connect before starting round 1.
 1. Install **Termux** from [F-Droid](https://f-droid.org) (not Play Store — that version is outdated)
 
 2. Open Termux and run:
+
 ```bash
 bash termux_setup.sh
 ```
 
 3. Copy your project files to the phone. Options:
+
 ```bash
 # Option A — scp from laptop (phone and laptop on same WiFi)
 # Run this from your LAPTOP:
@@ -87,6 +189,7 @@ git clone https://github.com/YOUR_USERNAME/fl_project.git ~/fl_project
 ```
 
 4. On the phone, run the device profiler:
+
 ```bash
 cd ~/fl_project
 python adaptive_serving.py \
@@ -124,26 +227,28 @@ python comm_analysis.py
 ## Quick reference: arguments
 
 ### server.py
-| Argument | Default | Description |
-|---|---|---|
-| `--rounds` | 20 | Number of FL rounds |
-| `--clients` | 5 | Min clients required per round |
-| `--variant` | large | Model size (large / medium / small) |
-| `--alpha` | 0.5 | Dirichlet skew (lower = more non-IID) |
-| `--port` | 8080 | gRPC port |
+
+| Argument    | Default | Description                           |
+| ----------- | ------- | ------------------------------------- |
+| `--rounds`  | 20      | Number of FL rounds                   |
+| `--clients` | 5       | Min clients required per round        |
+| `--variant` | large   | Model size (large / medium / small)   |
+| `--alpha`   | 0.5     | Dirichlet skew (lower = more non-IID) |
+| `--port`    | 8080    | gRPC port                             |
 
 ### client.py
-| Argument | Default | Description |
-|---|---|---|
-| `--server` | 127.0.0.1:8080 | Server IP:port |
-| `--client_id` | 0 | Unique client number |
-| `--num_clients` | 5 | Total clients (must match server) |
-| `--variant` | large | Model size |
-| `--epochs` | 3 | Local epochs per round |
-| `--alpha` | 0.5 | Dirichlet alpha (must match server) |
-| `--bandwidth` | 10.0 | Simulated upload Mbps |
-| `--straggler` | off | Enable random straggler delay |
-| `--simulate` | off | Enable bandwidth-limited upload delay |
+
+| Argument        | Default        | Description                           |
+| --------------- | -------------- | ------------------------------------- |
+| `--server`      | 127.0.0.1:8080 | Server IP:port                        |
+| `--client_id`   | 0              | Unique client number                  |
+| `--num_clients` | 5              | Total clients (must match server)     |
+| `--variant`     | large          | Model size                            |
+| `--epochs`      | 3              | Local epochs per round                |
+| `--alpha`       | 0.5            | Dirichlet alpha (must match server)   |
+| `--bandwidth`   | 10.0           | Simulated upload Mbps                 |
+| `--straggler`   | off            | Enable random straggler delay         |
+| `--simulate`    | off            | Enable bandwidth-limited upload delay |
 
 ---
 
@@ -183,11 +288,11 @@ than the raw flattened image, reducing communication cost.
 
 ## Adaptive serving tiers
 
-| Tier | RAM | Cores | Model | Params |
-|---|---|---|---|---|
-| high | ≥4 GB | ≥4 | large | ~2.3M |
-| medium | 2–4 GB | 2–3 | medium | ~820K |
-| low | <2 GB | 1 | small | ~106K |
+| Tier   | RAM    | Cores | Model  | Params |
+| ------ | ------ | ----- | ------ | ------ |
+| high   | ≥4 GB  | ≥4    | large  | ~2.3M  |
+| medium | 2–4 GB | 2–3   | medium | ~820K  |
+| low    | <2 GB  | 1     | small  | ~106K  |
 
 `adaptive_serving.py` detects the device and picks the tier automatically.
 
@@ -196,19 +301,23 @@ than the raw flattened image, reducing communication cost.
 ## Troubleshooting
 
 **"Connection refused" on phone**
+
 - Make sure phone and laptop are on the same WiFi network
 - Check laptop firewall allows port 8080: `sudo ufw allow 8080`
 - Verify laptop IP with `hostname -I`
 
 **PyTorch install fails on Termux**
+
 - Use CPU-only wheel: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`
 - If that fails: `pip install torch==2.0.0 --index-url https://download.pytorch.org/whl/cpu`
 
 **FEMNIST download slow**
+
 - Download once on PC, then copy `./data/` folder to phones via scp
 - `scp -r ./data user@<PHONE_IP>:~/fl_project/data`
 
 **Out of memory on phone**
+
 - Run `adaptive_serving.py` — it will pick `small` model automatically
 - Reduce batch size: `--batch_size 16`
 - Reduce epochs: `--epochs 1`

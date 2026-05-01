@@ -171,6 +171,8 @@ def main():
     parser.add_argument("--variant",      type=str,   default="large",
                         choices=["large","medium","small"],
                         help="Model size (adaptive_serving.py picks this automatically)")
+    parser.add_argument("--split_config", type=str,   default="full_local",
+                        help="Model split configuration (full_local, server_only, split_at_N)")
     parser.add_argument("--epochs",       type=int,   default=3,
                         help="Local epochs per round")
     parser.add_argument("--batch_size",   type=int,   default=32)
@@ -184,8 +186,12 @@ def main():
                         help="Enable simulated upload delay (for PC clients)")
     args = parser.parse_args()
 
+    if args.split_config == "server_only" and args.variant == "large":
+        print("[client] split_config=server_only detected, lowering device model to small to reduce load")
+        args.variant = "small"
+
     print(f"[client {args.client_id}] Connecting to server at {args.server}")
-    print(f"  variant={args.variant}  epochs={args.epochs}  "
+    print(f"  variant={args.variant}  split_config={args.split_config}  epochs={args.epochs}  "
           f"batch_size={args.batch_size}  alpha={args.alpha}")
 
     client = FEMNISTClient(
