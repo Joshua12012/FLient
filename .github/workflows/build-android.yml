@@ -53,7 +53,8 @@ jobs:
         pip install Cython==0.29.37
         pip install buildozer
         buildozer --version
-          - name: Build APK
+
+    - name: Build APK
       run: |
         export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
         yes | buildozer android debug 2>&1 | tee build.log
