@@ -38,7 +38,14 @@ jobs:
           zlib1g-dev \
           libgstreamer1.0-dev \
           gstreamer1.0-plugins-base \
-          gstreamer1.0-plugins-good
+          gstreamer1.0-plugins-good \
+          autoconf \
+          automake \
+          libtool \
+          libltdl-dev \
+          pkg-config \
+          libffi-dev \
+          m4
 
     - name: Install Buildozer
       run: |
