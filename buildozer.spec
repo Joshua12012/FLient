@@ -36,15 +36,11 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy,flwr,numpy,psutil,pyjnius,android,torch
+requirements = python3,kivy,numpy,psutil,pyjnius,android,tflite-runtime
 
 # (str) Custom source folders for requirements
 # Sets custom source for any requirements with recipes
 # requirements.source.kivy = ../../kivy
-
-# (list) Presets of requirements to avoid duplicate requirements
-# (str) Preset of requirements for Android
-android.presets = python3
 
 # (str) The Android arch to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
 android.arch = arm64-v8a
@@ -80,24 +76,11 @@ android.ndk = 25b
 # (list) Pattern to whitelist for the whole project
 #android.whitelist =
 
-# (str) Path to a custom whitelist file
 #android.whitelist_src =
-
-# (str) Path to a custom blacklist file
 #android.blacklist_src =
-
-# (list) List of Android .gradle dependencies to add (using guava syntax as a string)
-# This will allow you to use the latest version available
 #android.gradle_dependencies =
-
-# (list) Android add-on libraries to include (comma separated)
-android.add_libs = python3
-
-# (list) Java classes to add as activities to the manifest.
 #android.add_activities =
-
-# (str) OUYA Console category. Should be one of GAME, APP or SHELL.
-# ouya.category = GAME
+#ouya.category = GAME
 
 # (str) Filename of OUYA Console icon. It must be a 732x412 png image.
 # ouya.icon.filename = %(source.dir)s/data/ouya_icon.png
