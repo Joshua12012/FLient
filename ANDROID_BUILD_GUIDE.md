@@ -215,8 +215,43 @@ android.icon = path/to/your/icon.png
 
 Edit `buildozer.spec` requirements line:
 ```ini
-requirements = python3,kivy,flwr,numpy,psutil,pyjnius,android,your_package
+# CRITICAL: Use ONLY NumPy (no TensorFlow, no PyTorch!)
+# mobile_client.py uses pure NumPy for training - very lightweight!
+requirements = python3,kivy,numpy,psutil,pyjnius,android,flwr,requests
 ```
+
+### ⚠️ CRITICAL: Why Pure NumPy for Android?
+
+**The Problem:**
+- PyTorch (`torch`) doesn't build properly for Android with Buildozer
+- TensorFlow is too heavy (100+ MB) for mobile APKs
+- TFLite is inference-only (doesn't support training!)
+
+**The Solution:**
+The app now uses **`mobile_client.py`** - a pure **NumPy** implementation:
+- Custom neural network built with only NumPy
+- Supports training on device (SGD optimizer)
+- Very lightweight (~1-2 MB added to APK)
+- No heavy ML frameworks needed!
+
+**Architecture:**
+```bash
+Server (your PC):  PyTorch model  →  aggregates weights
+Mobile (Android):  NumPy model    →  trains locally
+```
+
+Both use the same neural network architecture, just different implementations.
+
+If you see this error on your phone:
+```
+[ERROR] Import Error: No module named 'mobile_client'
+```
+
+**Solution:**
+1. Ensure `mobile_client.py` is in your project root
+2. `buildozer.spec` should have: `requirements = ...,numpy,flwr` (NO torch/tensorflow)
+3. Clean previous builds: `buildozer android clean`
+4. Rebuild: `buildozer android debug`
 
 ### Change App Permissions
 
@@ -242,6 +277,38 @@ After successfully building and testing the Android app:
 - [Flower Framework](https://flower.dev/)
 - [TensorFlow Lite Android](https://www.tensorflow.org/lite/android)
 
+## Auto-Connection Features
+
+The client and server now include automatic connection handling:
+
+### Server: Auto Port Selection
+- If port 8080 is in use, server automatically finds an available port (8081, 8082, etc.)
+- Server displays the actual port it's using
+
+### Client: Auto Server Discovery
+- Client scans ports 8080-8100 to find the server
+- Retries connection up to 15 times with exponential backoff
+- Automatically discovers server even if port changed
+
+### Usage Example
+
+1. Start server (auto-finds port):
+```bash
+python tflite_server.py --port 8080
+# If 8080 in use, will use 8081, 8082, etc.
+```
+
+2. Client connects (auto-discovers):
+```bash
+python tflite_flower_client.py --server 192.168.1.100:8080
+# Will scan and find server even on different port
+```
+
+3. Or use the launcher:
+```bash
+python run_fl_with_auto_connect.py --mode both --num_clients 3
+```
+
 ## Quick Reference
 
 **Build APK:**
@@ -249,9 +316,14 @@ After successfully building and testing the Android app:
 buildozer android debug
 ```
 
-**Start Server:**
+**Start Server (for Android clients):**
 ```bash
-python server.py --rounds 20 --clients 5 --variant small --port 8080
+python mobile_server.py --rounds 20 --clients 5 --port 8080
+```
+
+**Start Server (for desktop clients):**
+```bash
+python src/servers/server.py --rounds 20 --clients 5 --variant small --port 8080
 ```
 
 **Clean Build (if needed):**

@@ -2,19 +2,17 @@
 flwr>=1.8.0
 
 # ── ML framework ──────────────────────────────────────────────────────────────
-# TensorFlow for mobile-friendly federated learning
+# TensorFlow/Keras for reliable federated learning
 tensorflow>=2.13.0
 
 # ── Data / numerics ───────────────────────────────────────────────────────────
 numpy>=1.24.0
 
-# ── System profiling (adaptive_serving.py) ───────────────────────────────────
+# ── System profiling ─────────────────────────────────────────────────────────
 psutil>=5.9.0
 
-# ── Visualisation (comm_analysis.py) — optional on phones ─────────────────────
-# Comment this out on Termux if install fails
-matplotlib>=3.7.0
-
-# ── Mobile GUI / optional frontend
+# ── Mobile GUI ───────────────────────────────────────────────────────────────
 kivy>=2.0.0
 
+# ── Network utilities ─────────────────────────────────────────────────────────
+requests>=2.28.0

@@ -1,25 +1,34 @@
-# Federated Learning on Edge Devices
+# Federated Learning on Edge Devices (Pure NumPy)
 
-### FEMNIST + Flower + Kivy GUI + Optimized Model Splitting
+### Lightweight Federated Learning using ONLY NumPy - No PyTorch or TensorFlow!
+
+This project uses **pure NumPy** for neural network training on Android devices. No heavy ML frameworks needed!
 
 ---
 
-## Project structure
+## Project Structure (Clean NumPy-Only)
 
 ```
-fl_project/
-├── data_utils.py        ← FEMNIST loader + Dirichlet non-IID partition
-├── model.py             ← Large / Medium / Small CNN + split inference
-├── server.py            ← Flower FedAvg server with round logging
-├── client.py            ← Flower edge client (phone or PC)
-├── adaptive_serving.py  ← Device profiler → picks model tier + optimized splitting
-├── kivy_client.py       ← Kivy GUI for mobile FL client
-├── fl_runner.py         ← Single-PC end-to-end simulation
-├── comm_analysis.py     ← Round log plotter
-├── requirements.txt
-├── termux_setup.sh      ← Run once on each Android phone (alternative)
-└── README.md
+Federated_Learning_Edge/
+├── main.py                       # Android entry point (Buildozer)
+├── mobile_client.py             # Pure NumPy Flower client (Android/Desktop)
+├── mobile_server.py             # PyTorch server for PC (aggregates weights)
+├── src/
+│   ├── gui/
+│   │   └── kivy_client.py       # Kivy GUI for mobile
+│   └── utils/
+│       └── connection_utils.py  # Auto-discovery & retry logic
+├── buildozer.spec               # Android build config (NumPy only!)
+├── requirements.txt             # Python deps (NO torch/tensorflow)
+├── android_requirements.txt     # Android deps (NO torch/tensorflow)
+└── README.md                    # This file
 ```
+
+**Why NumPy Only?**
+- PyTorch doesn't build properly for Android APKs
+- TensorFlow adds 100+ MB to APK size
+- TFLite is inference-only (can't train!)
+- NumPy is lightweight (~2 MB) and supports training!
 
 ---
 
@@ -55,13 +64,13 @@ pip install tensorflow
 2. Export a small TFLite model first:
 
 ```bash
-python tf_model.py --variant small --output mobile_model.tflite --quantize
+python src/models/tf_model.py --variant small --output mobile_model.tflite --quantize
 ```
 
 3. Start the GUI:
 
 ```bash
-python kivy_client.py
+python src/gui/kivy_client.py
 ```
 
 4. Enter the model path, then press `Load Model`.
@@ -101,19 +110,19 @@ For mobile deployment, TensorFlow Lite is a much better runtime than full PyTorc
 
 This project now includes:
 
-- `tf_model.py` — TensorFlow model definitions and TFLite export helper
+- `src/models/tf_model.py` — TensorFlow model definitions and TFLite export helper
 - `tflite_client.py` — lightweight TFLite client runtime skeleton
 
 Recommended workflow:
 
 1. Train or sync a small model on the server (PyTorch or TensorFlow).
-2. Export a mobile-friendly variant to `.tflite` using `tf_model.py`.
+2. Export a mobile-friendly variant to `.tflite` using `src/models/tf_model.py`.
 3. Deploy the `.tflite` file to the phone and run the client with `tflite_client.py` or a Kivy wrapper.
 
 For example:
 
 ```bash
-python tf_model.py --variant small --output mobile_model.tflite --quantize
+python src/models/tf_model.py --variant small --output mobile_model.tflite --quantize
 python tflite_client.py --model mobile_model.tflite
 ```
 
@@ -157,7 +166,7 @@ Note the IP, e.g. `192.168.1.100`
 ### Step B — Start the server on your laptop
 
 ```bash
-python server.py \
+python src/servers/server.py \
   --rounds 20 \
   --clients 5 \
   --variant large \
@@ -206,13 +215,13 @@ If you have 2 phones (client 0 and 1) and need 5 clients total, run clients 2–
 
 ```bash
 # Terminal 2
-python client.py --server 127.0.0.1:8080 --client_id 2 --num_clients 5 --simulate
+python src/clients/client.py --server 127.0.0.1:8080 --client_id 2 --num_clients 5 --simulate
 
 # Terminal 3
-python client.py --server 127.0.0.1:8080 --client_id 3 --num_clients 5 --simulate
+python src/clients/client.py --server 127.0.0.1:8080 --client_id 3 --num_clients 5 --simulate
 
 # Terminal 4
-python client.py --server 127.0.0.1:8080 --client_id 4 --num_clients 5 --simulate
+python src/clients/client.py --server 127.0.0.1:8080 --client_id 4 --num_clients 5 --simulate
 ```
 
 ### Step E — After training completes
@@ -226,7 +235,7 @@ python comm_analysis.py
 
 ## Quick reference: arguments
 
-### server.py
+### src/servers/server.py
 
 | Argument    | Default | Description                           |
 | ----------- | ------- | ------------------------------------- |
@@ -236,7 +245,7 @@ python comm_analysis.py
 | `--alpha`   | 0.5     | Dirichlet skew (lower = more non-IID) |
 | `--port`    | 8080    | gRPC port                             |
 
-### client.py
+### src/clients/client.py
 
 | Argument        | Default        | Description                           |
 | --------------- | -------------- | ------------------------------------- |

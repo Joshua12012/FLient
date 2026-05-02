@@ -1,0 +1,112 @@
+[
+  {
+    "round": 1,
+    "elapsed_s": 39.21,
+    "num_clients": 2,
+    "avg_train_loss": 2.3055057525634766,
+    "avg_train_time_s": 1.6559157371520996,
+    "clients": [
+      1,
+      0
+    ]
+  },
+  {
+    "round": 2,
+    "elapsed_s": 39.56,
+    "num_clients": 2,
+    "avg_train_loss": 2.303828477859497,
+    "avg_train_time_s": 0.28529155254364014,
+    "clients": [
+      0,
+      1
+    ]
+  },
+  {
+    "round": 3,
+    "elapsed_s": 39.9,
+    "num_clients": 2,
+    "avg_train_loss": 2.3020522594451904,
+    "avg_train_time_s": 0.28003501892089844,
+    "clients": [
+      1,
+      0
+    ]
+  },
+  {
+    "round": 4,
+    "elapsed_s": 40.25,
+    "num_clients": 2,
+    "avg_train_loss": 2.303027868270874,
+    "avg_train_time_s": 0.28765952587127686,
+    "clients": [
+      1,
+      0
+    ]
+  },
+  {
+    "round": 5,
+    "elapsed_s": 40.62,
+    "num_clients": 2,
+    "avg_train_loss": 2.302447199821472,
+    "avg_train_time_s": 0.2986612319946289,
+    "clients": [
+      1,
+      0
+    ]
+  },
+  {
+    "round": 6,
+    "elapsed_s": 41.03,
+    "num_clients": 2,
+    "avg_train_loss": 2.3022847175598145,
+    "avg_train_time_s": 0.3712557554244995,
+    "clients": [
+      1,
+      0
+    ]
+  },
+  {
+    "round": 7,
+    "elapsed_s": 41.39,
+    "num_clients": 2,
+    "avg_train_loss": 2.3027161359786987,
+    "avg_train_time_s": 0.30842435359954834,
+    "clients": [
+      1,
+      0
+    ]
+  },
+  {
+    "round": 8,
+    "elapsed_s": 41.71,
+    "num_clients": 2,
+    "avg_train_loss": 2.3020015954971313,
+    "avg_train_time_s": 0.28410375118255615,
+    "clients": [
+      0,
+      1
+    ]
+  },
+  {
+    "round": 9,
+    "elapsed_s": 42.04,
+    "num_clients": 2,
+    "avg_train_loss": 2.301595091819763,
+    "avg_train_time_s": 0.3045506477355957,
+    "clients": [
+      1,
+      0
+    ]
+  },
+  {
+    "round": 10,
+    "elapsed_s": 42.56,
+    "num_clients": 2,
+    "avg_train_loss": 2.3019293546676636,
+    "avg_train_time_s": 0.49247264862060547,
+    "clients": [
+      0,
+      1
+    ]
+  }
+]

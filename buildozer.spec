@@ -13,7 +13,10 @@ package.domain = org.flclient
 source.dir = .
 
 # (list) Source files to include (let empty to include all the files)
-source.include_exts = py,png,jpg,kv,atlas,json,tflite
+source.include_exts = py,png,jpg,kv,atlas,json,tflite,pkl
+
+# (list) Source files to exclude (let empty to not exclude anything)
+source.exclude_dirs = tests, bin, venv, build, config
 
 # (list) List of inclusions using pattern matching
 #source.include_patterns = assets/*,images/*.png
@@ -36,7 +39,9 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy,numpy,psutil,pyjnius,android,tflite-runtime,tensorflow
+# For Android: Use TensorFlow/Keras (reliable framework!)
+# mobile_client.py uses TensorFlow for training - well-tested!
+requirements = python3,kivy,numpy,psutil,pyjnius,android,flwr,requests,tensorflow
 
 # (str) Custom source folders for requirements
 # Sets custom source for any requirements with recipes
@@ -44,6 +49,12 @@ requirements = python3,kivy,numpy,psutil,pyjnius,android,tflite-runtime,tensorfl
 
 # (str) The Android arch to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
 android.arch = arm64-v8a
+
+# (bool) Indicate if the application should be fullscreen or not
+android.fullscreen = False
+
+# (bool) Indicate if the application should be considered as a game or not
+android.game = False
 
 # (int) minimum API level required
 android.minapi = 21
@@ -144,7 +155,11 @@ android.presplash_color = #FFFFFF
 android.orientation = portrait
 
 # (list) Android permission
+# Android permissions for network and storage
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
+
+# Exclude PyTorch libraries (we use TensorFlow)
+android.exclude_libs = libtorch.so,libc10.so
 
 [buildozer]
 

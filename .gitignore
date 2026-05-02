@@ -2,4 +2,4 @@ __pycache__/
 venv/
 data/
 mobile_model.tflite
-
+new_env/
