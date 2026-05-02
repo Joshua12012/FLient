@@ -2,27 +2,19 @@
 flwr>=1.8.0
 
 # ── ML framework ──────────────────────────────────────────────────────────────
-# On PC: install normally
-# On Termux (Android): torch CPU-only wheel auto-selected
-torch>=2.0.0
-torchvision>=0.15.0
+# TensorFlow for mobile-friendly federated learning
+tensorflow>=2.13.0
 
 # ── Data / numerics ───────────────────────────────────────────────────────────
 numpy>=1.24.0
 
 # ── System profiling (adaptive_serving.py) ───────────────────────────────────
-# On Termux: psutil installs fine
 psutil>=5.9.0
 
 # ── Visualisation (comm_analysis.py) — optional on phones ─────────────────────
-# Comment this out on Termux if install fails (comm_analysis still prints text)
+# Comment this out on Termux if install fails
 matplotlib>=3.7.0
 
 # ── Mobile GUI / optional frontend
 kivy>=2.0.0
 
-# ── TensorFlow/TFLite support for lightweight client
-# For desktop (Windows/Linux/Mac):
-tensorflow>=2.13.0
-# For mobile runtime (Android/Raspberry Pi):
-# pip install tflite-runtime

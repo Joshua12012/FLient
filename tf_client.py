@@ -48,7 +48,11 @@ def set_parameters(model, parameters):
 
 def estimate_upload_kb(model):
     """Approximate the size of model weights if sent over the wire (float32)."""
-    total_bytes = sum(w.size * 4 for w in model.trainable_weights)
+    total_bytes = 0
+    for w in model.trainable_weights:
+        # TensorFlow variables use .shape instead of .size
+        size = np.prod(w.shape)
+        total_bytes += size * 4  # float32 = 4 bytes
     return total_bytes / 1024
 
 
@@ -78,20 +82,21 @@ def create_dataset(x, y, batch_size=32, shuffle=True):
 # ── Flower client ─────────────────────────────────────────────────────────────
 
 class FEMNISTClient(fl.client.NumPyClient):
-    def __init__(self, client_id, num_clients, variant, epochs, batch_size):
+    def __init__(self, client_id, variant, epochs, batch_size, progress_callback=None):
         self.client_id = client_id
         self.variant = variant
         self.epochs = epochs
         self.batch_size = batch_size
+        self.progress_callback = progress_callback
 
         log(f"[Client {client_id}] Initializing with variant={variant}")
 
         # Load this client's shard of data (synthetic for now)
         log(f"[Client {client_id}] Loading data shard...")
         t0 = time.time()
-        
-        # Generate synthetic data for this client
-        num_samples = 2000 // num_clients
+
+        # Generate synthetic data for this client (fixed size per client)
+        num_samples = 2000
         x, y = load_femnist_synthetic(num_samples=num_samples)
         
         # Split into train/test
@@ -130,16 +135,32 @@ class FEMNISTClient(fl.client.NumPyClient):
         set_parameters(self.model, parameters)
         log(f"[Client {self.client_id}] Weights synced successfully")
 
-        # Local training
+        # Local training with per-epoch callbacks
         log(f"[Client {self.client_id}] Starting local training for {self.epochs} epochs...")
         t0 = time.time()
-        
+
+        # Custom callback for per-epoch progress
+        class EpochProgressCallback(tf.keras.callbacks.Callback):
+            def __init__(self, callback, epochs):
+                self.callback = callback
+                self.epochs = epochs
+
+            def on_epoch_end(self, epoch, logs=None):
+                if self.callback:
+                    loss = logs.get('loss', 0.0)
+                    self.callback(f"Epoch {epoch + 1}/{self.epochs} - Loss: {loss:.4f}")
+
+        callbacks = []
+        if self.progress_callback:
+            callbacks.append(EpochProgressCallback(self.progress_callback, self.epochs))
+
         history = self.model.fit(
             self.train_dataset,
             epochs=self.epochs,
-            verbose=0
+            verbose=0,
+            callbacks=callbacks
         )
-        
+
         train_time = time.time() - t0
         train_loss = history.history['loss'][-1]
         log(f"[Client {self.client_id}] Training completed in {train_time:.2f}s")
@@ -173,14 +194,12 @@ class FEMNISTClient(fl.client.NumPyClient):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def main():
+def main(progress_callback=None):
     parser = argparse.ArgumentParser(description="Flower FEMNIST TensorFlow Client")
     parser.add_argument("--server",       type=str,   default="127.0.0.1:8080",
                         help="Server IP:port")
     parser.add_argument("--client_id",    type=int,   default=0,
                         help="Unique ID for this client")
-    parser.add_argument("--num_clients",  type=int,   default=5,
-                        help="Total number of clients")
     parser.add_argument("--variant",      type=str,   default="small",
                         choices=["large","medium","small"],
                         help="Model size")
@@ -200,10 +219,10 @@ def main():
         log("Creating TensorFlow Flower client...")
         client = FEMNISTClient(
             client_id     = args.client_id,
-            num_clients   = args.num_clients,
             variant       = args.variant,
             epochs        = args.epochs,
             batch_size    = args.batch_size,
+            progress_callback=progress_callback,
         )
 
         log(f"Connecting to Flower server at {args.server}...")

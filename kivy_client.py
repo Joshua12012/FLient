@@ -48,10 +48,6 @@ class KivyFLApp(App):
         self.client_id_input = TextInput(text='0', multiline=False)
         config.add_widget(self.client_id_input)
 
-        config.add_widget(Label(text='Total clients:', size_hint_x=None, width=120))
-        self.num_clients_input = TextInput(text='5', multiline=False)
-        config.add_widget(self.num_clients_input)
-
         root.add_widget(config)
 
         # Start button
@@ -95,20 +91,18 @@ class KivyFLApp(App):
     def on_start_flower_client(self, instance):
         server = self.server_input.text.strip()
         client_id = self.client_id_input.text.strip()
-        num_clients = self.num_clients_input.text.strip()
 
-        if not server or not client_id or not num_clients:
-            self.update_status('Error: server, client id, and total clients are required.')
+        if not server or not client_id:
+            self.update_status('Error: server and client id are required.')
             return
 
         try:
             int(client_id)
-            int(num_clients)
         except ValueError:
-            self.update_status('Error: client id and total clients must be integers.')
+            self.update_status('Error: client id must be an integer.')
             return
 
-        thread = threading.Thread(target=self.run_flower_client_thread, args=(server, client_id, num_clients), daemon=True)
+        thread = threading.Thread(target=self.run_flower_client_thread, args=(server, client_id), daemon=True)
         thread.start()
         self.fl_btn.disabled = True
         self.fl_btn.text = 'Running...'
@@ -116,13 +110,12 @@ class KivyFLApp(App):
     def on_clear_logs(self, instance):
         self.update_status('Logs cleared. Ready to start federated learning.')
 
-    def run_flower_client_thread(self, server, client_id, num_clients):
+    def run_flower_client_thread(self, server, client_id):
         start_time = time.time()
         self.append_status(f'=== Starting Flower Client ===')
         self.append_status(f'Target server: {server}')
         self.append_status(f'Client ID: {client_id}')
-        self.append_status(f'Total clients: {num_clients}')
-        
+
         # Import Flower client here to avoid issues on Android
         try:
             self.append_status('[1/5] Importing TensorFlow client module...')
@@ -134,7 +127,6 @@ class KivyFLApp(App):
                 'tf_client.py',
                 '--server', server,
                 '--client_id', client_id,
-                '--num_clients', num_clients,
                 '--epochs', '1',
                 '--batch_size', '32',
                 '--variant', 'small',
@@ -144,7 +136,11 @@ class KivyFLApp(App):
             step_start = time.time()
             self.append_status('[3/5] Loading FEMNIST dataset shard...')
 
-            client_main()
+            # Pass progress callback to receive epoch updates
+            def progress_callback(message):
+                self.append_status(message)
+
+            client_main(progress_callback=progress_callback)
 
             step_duration = time.time() - step_start
             total_duration = time.time() - start_time
