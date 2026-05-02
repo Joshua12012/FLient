@@ -24,10 +24,17 @@ import torch
 import torch.nn as nn
 import flwr as fl
 from collections import OrderedDict
+from datetime import datetime
 
 from model import get_model, NUM_CLASSES
 from data_utils import get_single_client_loader
 
+
+# ── logging helpers ─────────────────────────────────────────────────────────────
+
+def log(message):
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    print(f"[{timestamp}] {message}")
 
 # ── parameter helpers ─────────────────────────────────────────────────────────
 
@@ -63,18 +70,26 @@ class FEMNISTClient(fl.client.NumPyClient):
         self.simulate       = simulate
         self.device         = "cuda" if torch.cuda.is_available() else "cpu"
 
+        log(f"[Client {client_id}] Initializing with variant={variant}, device={self.device}")
+
         # Load this client's shard of FEMNIST
-        print(f"[client {client_id}] Loading FEMNIST shard…")
+        log(f"[Client {client_id}] Loading FEMNIST shard...")
+        t0 = time.time()
         self.train_loader, self.test_loader, _ = get_single_client_loader(
             client_id=client_id,
             num_clients=num_clients,
             batch_size=batch_size,
             alpha=alpha,
         )
-        print(f"[client {client_id}] Shard size: {len(self.train_loader.dataset)} samples")
+        load_time = time.time() - t0
+        log(f"[Client {client_id}] Dataset loaded in {load_time:.2f}s")
+        log(f"[Client {client_id}] Training samples: {len(self.train_loader.dataset)}")
+        log(f"[Client {client_id}] Test samples: {len(self.test_loader.dataset)}")
 
+        log(f"[Client {client_id}] Loading model...")
         self.model     = get_model(variant).to(self.device)
         self.criterion = nn.CrossEntropyLoss()
+        log(f"[Client {client_id}] Model loaded successfully")
 
     # ── Flower API ──────────────────────────────────────────────────────────
 
@@ -82,28 +97,37 @@ class FEMNISTClient(fl.client.NumPyClient):
         return get_parameters(self.model)
 
     def fit(self, parameters, config):
+        log(f"[Client {self.client_id}] === Starting training round ===")
+        round_num = config.get("round", 0)
+        log(f"[Client {self.client_id}] Round {round_num}")
+
         # 1. Sync global weights
+        log(f"[Client {self.client_id}] Syncing global model weights...")
         set_parameters(self.model, parameters)
+        log(f"[Client {self.client_id}] Weights synced successfully")
 
         # 2. Simulate straggler delay (slow phones finish later)
         if self.straggler:
             delay = random.uniform(1.0, 5.0)
-            print(f"[client {self.client_id}] Straggler delay: {delay:.1f}s")
+            log(f"[Client {self.client_id}] Straggler delay: {delay:.1f}s")
             time.sleep(delay)
 
         # 3. Local training
+        log(f"[Client {self.client_id}] Starting local training for {self.epochs} epochs...")
         t0 = time.time()
         train_loss = self._train(self.epochs)
         train_time = time.time() - t0
+        log(f"[Client {self.client_id}] Training completed in {train_time:.2f}s")
 
         # 4. Simulate upload delay based on bandwidth
         upload_kb = estimate_upload_kb(self.model)
         if self.simulate:
             upload_delay = (upload_kb / 1024) / self.bandwidth_mbps
+            log(f"[Client {self.client_id}] Simulating upload delay: {upload_delay:.2f}s")
             time.sleep(upload_delay)
 
-        print(
-            f"[client {self.client_id}] "
+        log(
+            f"[Client {self.client_id}] "
             f"loss={train_loss:.4f}  "
             f"time={train_time:.1f}s  "
             f"upload={upload_kb:.1f} KB"
@@ -115,11 +139,14 @@ class FEMNISTClient(fl.client.NumPyClient):
             "upload_kb":   float(upload_kb),
             "client_id":   float(self.client_id),
         }
+        log(f"[Client {self.client_id}] Sending update to server...")
         return get_parameters(self.model), len(self.train_loader.dataset), metrics
 
     def evaluate(self, parameters, config):
+        log(f"[Client {self.client_id}] Starting evaluation...")
         set_parameters(self.model, parameters)
         loss, accuracy = self._evaluate()
+        log(f"[Client {self.client_id}] Evaluation complete - loss: {loss:.4f}, accuracy: {accuracy:.4f}")
         return float(loss), len(self.test_loader.dataset), {"accuracy": float(accuracy)}
 
     # ── internal helpers ────────────────────────────────────────────────────
@@ -132,6 +159,8 @@ class FEMNISTClient(fl.client.NumPyClient):
         total_loss = 0.0
         total_samples = 0
         for epoch in range(epochs):
+            epoch_loss = 0.0
+            epoch_samples = 0
             for x, y in self.train_loader:
                 x, y = x.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
@@ -139,8 +168,12 @@ class FEMNISTClient(fl.client.NumPyClient):
                 loss = self.criterion(out, y)
                 loss.backward()
                 optimizer.step()
-                total_loss    += loss.item() * x.size(0)
+                epoch_loss   += loss.item() * x.size(0)
+                epoch_samples += x.size(0)
+                total_loss   += loss.item() * x.size(0)
                 total_samples += x.size(0)
+            avg_epoch_loss = epoch_loss / max(epoch_samples, 1)
+            log(f"[Client {self.client_id}] Epoch {epoch+1}/{epochs} - loss: {avg_epoch_loss:.4f}")
         return total_loss / max(total_samples, 1)
 
     def _evaluate(self):
@@ -186,30 +219,54 @@ def main():
                         help="Enable simulated upload delay (for PC clients)")
     args = parser.parse_args()
 
+    log("=" * 60)
+    log(f"Flower FEMNIST Edge Client - ID: {args.client_id}")
+    log("=" * 60)
+
     if args.split_config == "server_only" and args.variant == "large":
-        print("[client] split_config=server_only detected, lowering device model to small to reduce load")
+        log("split_config=server_only detected, lowering device model to small")
         args.variant = "small"
 
-    print(f"[client {args.client_id}] Connecting to server at {args.server}")
-    print(f"  variant={args.variant}  split_config={args.split_config}  epochs={args.epochs}  "
-          f"batch_size={args.batch_size}  alpha={args.alpha}")
+    log(f"Target server: {args.server}")
+    log(f"Configuration: variant={args.variant}, epochs={args.epochs}, "
+        f"batch_size={args.batch_size}, alpha={args.alpha}")
+    log(f"Simulation: bandwidth={args.bandwidth} Mbps, straggler={args.straggler}")
 
-    client = FEMNISTClient(
-        client_id     = args.client_id,
-        num_clients   = args.num_clients,
-        variant       = args.variant,
-        alpha         = args.alpha,
-        bandwidth_mbps= args.bandwidth,
-        straggler     = args.straggler,
-        epochs        = args.epochs,
-        batch_size    = args.batch_size,
-        simulate      = args.simulate,
-    )
+    try:
+        log("Creating Flower client instance...")
+        client = FEMNISTClient(
+            client_id     = args.client_id,
+            num_clients   = args.num_clients,
+            variant       = args.variant,
+            alpha         = args.alpha,
+            bandwidth_mbps= args.bandwidth,
+            straggler     = args.straggler,
+            epochs        = args.epochs,
+            batch_size    = args.batch_size,
+            simulate      = args.simulate,
+        )
 
-    fl.client.start_numpy_client(
-        server_address=args.server,
-        client=client,
-    )
+        log(f"Connecting to Flower server at {args.server}...")
+        log("Waiting for server to accept connection...")
+
+        fl.client.start_numpy_client(
+            server_address=args.server,
+            client=client,
+        )
+
+        log("Federated learning session completed successfully")
+        log("=" * 60)
+
+    except ConnectionRefusedError:
+        log(f"❌ Connection refused - server not reachable at {args.server}")
+        log("Make sure the server is running and the address is correct")
+        raise
+    except TimeoutError:
+        log(f"❌ Connection timeout - server did not respond in time")
+        raise
+    except Exception as e:
+        log(f"❌ Unexpected error: {type(e).__name__}: {e}")
+        raise
 
 
 if __name__ == "__main__":

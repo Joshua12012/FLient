@@ -8,7 +8,9 @@ Connects to a server running on your PC for federated training.
 import os
 import sys
 import threading
+import time
 import numpy as np
+from datetime import datetime
 
 import kivy
 kivy.require('2.0.0')
@@ -72,12 +74,16 @@ class KivyFLApp(App):
 
         return root
 
+    def get_timestamp(self):
+        return datetime.now().strftime('%H:%M:%S')
+
     def update_status(self, text):
         self.status_text = text
         self.status_label.text = self.status_text
 
     def append_status(self, text):
-        self.status_text += '\n' + text
+        timestamped_text = f"[{self.get_timestamp()}] {text}"
+        self.status_text += '\n' + timestamped_text
         self.status_label.text = self.status_text
 
     def on_start_flower_client(self, instance):
@@ -102,32 +108,56 @@ class KivyFLApp(App):
         self.fl_btn.text = 'Running...'
 
     def run_flower_client_thread(self, server, client_id, num_clients):
-        self.append_status(f'Starting lightweight TFLite Flower client {client_id} → {server}')
+        start_time = time.time()
+        self.append_status(f'=== Starting Flower Client ===')
+        self.append_status(f'Target server: {server}')
+        self.append_status(f'Client ID: {client_id}')
+        self.append_status(f'Total clients: {num_clients}')
         
-        # Import TFLite Flower client here to avoid issues on Android
+        # Import Flower client here to avoid issues on Android
         try:
-            from tflite_flower_client import main as client_main
+            self.append_status('[1/5] Importing client module...')
             import sys
+            from client import main as client_main
             
             # Set command line arguments for client
             sys.argv = [
-                'tflite_flower_client.py',
+                'client.py',
                 '--server', server,
                 '--client_id', client_id,
                 '--num_clients', num_clients,
                 '--epochs', '1',
+                '--batch_size', '32',
+                '--variant', 'small',
+                '--alpha', '0.5',
             ]
             
-            self.append_status('Initializing lightweight TFLite client...')
-            self.append_status('Loading 2000-sample synthetic dataset (fast!)...')
+            self.append_status('[2/5] Initializing Flower client...')
+            step_start = time.time()
+            self.append_status('[3/5] Loading FEMNIST dataset shard...')
+            
             client_main()
-            self.append_status('Lightweight TFLite client finished successfully.')
+            
+            step_duration = time.time() - step_start
+            total_duration = time.time() - start_time
+            self.append_status('[4/5] Training completed successfully')
+            self.append_status(f'[5/5] Client finished in {total_duration:.1f}s (training: {step_duration:.1f}s)')
+            self.append_status('=== Session Complete ===')
             
         except ImportError as e:
-            self.append_status(f'Error importing client module: {e}')
-            self.append_status('Make sure tflite_flower_client.py is included in the app package.')
+            self.append_status(f'❌ Import Error: {e}')
+            self.append_status('Make sure client.py and dependencies are available')
+        except ConnectionRefusedError as e:
+            self.append_status(f'❌ Connection Refused: {e}')
+            self.append_status(f'Check if server is running at {server}')
+            self.append_status('Make sure firewall allows the connection')
+        except TimeoutError as e:
+            self.append_status(f'❌ Connection Timeout: {e}')
+            self.append_status('Server took too long to respond')
         except Exception as exc:
-            self.append_status(f'Flower client failed: {exc}')
+            self.append_status(f'❌ Error: {type(exc).__name__}: {exc}')
+            import traceback
+            self.append_status(f'Traceback: {traceback.format_exc()[:500]}')
         finally:
             self.fl_btn.disabled = False
             self.fl_btn.text = 'Start Federated Learning'
