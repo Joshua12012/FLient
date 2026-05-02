@@ -1,5 +1,5 @@
 # ── Core FL framework ─────────────────────────────────────────────────────────
-flwr==1.7.0
+flwr>=1.8.0
 
 # ── ML framework ──────────────────────────────────────────────────────────────
 # On PC: install normally
@@ -21,8 +21,8 @@ matplotlib>=3.7.0
 # ── Mobile GUI / optional frontend
 kivy>=2.0.0
 
-# ── Optional TensorFlow/TFLite support for mobile runtime
+# ── TensorFlow/TFLite support for lightweight client
 # For desktop (Windows/Linux/Mac):
-# pip install tensorflow
+tensorflow>=2.13.0
 # For mobile runtime (Android/Raspberry Pi):
 # pip install tflite-runtime

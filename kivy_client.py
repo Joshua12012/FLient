@@ -102,31 +102,30 @@ class KivyFLApp(App):
         self.fl_btn.text = 'Running...'
 
     def run_flower_client_thread(self, server, client_id, num_clients):
-        self.append_status(f'Starting Flower client {client_id} → {server}')
+        self.append_status(f'Starting lightweight TFLite Flower client {client_id} → {server}')
         
-        # Import Flower client here to avoid issues on Android
+        # Import TFLite Flower client here to avoid issues on Android
         try:
-            from client import main as client_main
+            from tflite_flower_client import main as client_main
             import sys
             
             # Set command line arguments for client
             sys.argv = [
-                'client.py',
+                'tflite_flower_client.py',
                 '--server', server,
                 '--client_id', client_id,
                 '--num_clients', num_clients,
-                '--variant', 'small',
                 '--epochs', '1',
-                '--alpha', '0.5',
             ]
             
-            self.append_status('Initializing Flower client...')
+            self.append_status('Initializing lightweight TFLite client...')
+            self.append_status('Loading 2000-sample synthetic dataset (fast!)...')
             client_main()
-            self.append_status('Flower client finished successfully.')
+            self.append_status('Lightweight TFLite client finished successfully.')
             
         except ImportError as e:
             self.append_status(f'Error importing client module: {e}')
-            self.append_status('Make sure client.py is included in the app package.')
+            self.append_status('Make sure tflite_flower_client.py is included in the app package.')
         except Exception as exc:
             self.append_status(f'Flower client failed: {exc}')
         finally:
