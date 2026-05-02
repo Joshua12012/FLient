@@ -237,6 +237,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
+        sudo apt-get install -y libunwind-dev
         sudo apt-get install -y \
           build-essential \
           git \
@@ -250,9 +251,6 @@ jobs:
           libavformat-dev \
           libavcodec-dev \
           zlib1g-dev \
-          libgstreamer1.0-dev \
-          gstreamer1.0-plugins-base \
-          gstreamer1.0-plugins-good \
           autoconf \
           automake \
           libtool \
