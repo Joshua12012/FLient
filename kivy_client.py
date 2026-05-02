@@ -55,10 +55,16 @@ class KivyFLApp(App):
         root.add_widget(config)
 
         # Start button
-        self.fl_btn = Button(text='Start Federated Learning', 
+        self.fl_btn = Button(text='Start Federated Learning',
                             size_hint_y=None, height=60, font_size=16)
         self.fl_btn.bind(on_press=self.on_start_flower_client)
         root.add_widget(self.fl_btn)
+
+        # Clear logs button
+        clear_btn = Button(text='Clear Logs',
+                          size_hint_y=None, height=40, font_size=14)
+        clear_btn.bind(on_press=self.on_clear_logs)
+        root.add_widget(clear_btn)
 
         # Status log
         root.add_widget(Label(text='Status:', size_hint_y=None, height=30, font_size=14))
@@ -107,6 +113,9 @@ class KivyFLApp(App):
         self.fl_btn.disabled = True
         self.fl_btn.text = 'Running...'
 
+    def on_clear_logs(self, instance):
+        self.update_status('Logs cleared. Ready to start federated learning.')
+
     def run_flower_client_thread(self, server, client_id, num_clients):
         start_time = time.time()
         self.append_status(f'=== Starting Flower Client ===')
@@ -116,37 +125,44 @@ class KivyFLApp(App):
         
         # Import Flower client here to avoid issues on Android
         try:
-            self.append_status('[1/5] Importing client module...')
+            self.append_status('[1/5] Importing TensorFlow client module...')
             import sys
-            from client import main as client_main
-            
+            from tf_client import main as client_main
+
             # Set command line arguments for client
             sys.argv = [
-                'client.py',
+                'tf_client.py',
                 '--server', server,
                 '--client_id', client_id,
                 '--num_clients', num_clients,
                 '--epochs', '1',
                 '--batch_size', '32',
                 '--variant', 'small',
-                '--alpha', '0.5',
             ]
-            
+
             self.append_status('[2/5] Initializing Flower client...')
             step_start = time.time()
             self.append_status('[3/5] Loading FEMNIST dataset shard...')
-            
+
             client_main()
-            
+
             step_duration = time.time() - step_start
             total_duration = time.time() - start_time
             self.append_status('[4/5] Training completed successfully')
             self.append_status(f'[5/5] Client finished in {total_duration:.1f}s (training: {step_duration:.1f}s)')
             self.append_status('=== Session Complete ===')
-            
+
         except ImportError as e:
-            self.append_status(f'❌ Import Error: {e}')
-            self.append_status('Make sure client.py and dependencies are available')
+            error_msg = str(e)
+            if 'tensorflow' in error_msg or 'tf' in error_msg:
+                self.append_status('❌ TensorFlow not found on this device')
+                self.append_status('This app requires TensorFlow for federated learning.')
+                self.append_status('SOLUTION: Rebuild the app with buildozer after updating buildozer.spec')
+                self.append_status('The buildozer.spec now includes tensorflow in requirements.')
+                self.append_status('Run: buildozer android clean && buildozer android debug')
+            else:
+                self.append_status(f'❌ Import Error: {e}')
+                self.append_status('Make sure tf_client.py and dependencies are available')
         except ConnectionRefusedError as e:
             self.append_status(f'❌ Connection Refused: {e}')
             self.append_status(f'Check if server is running at {server}')

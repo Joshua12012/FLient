@@ -213,6 +213,92 @@
 
 
 
+# name: Build Android APK
+
+# on:
+#   push:
+#     branches: [ main, master ]
+#   pull_request:
+#     branches: [ main, master ]
+#   workflow_dispatch:
+
+# jobs:
+#   build:
+#     runs-on: ubuntu-22.04   # ubuntu-latest = ubuntu-24 which breaks NDK r25b + Kivy
+
+#     steps:
+#     - uses: actions/checkout@v4
+
+#     - name: Set up Python
+#       uses: actions/setup-python@v4
+#       with:
+#         python-version: '3.10'
+
+#     - name: Install system dependencies
+#       run: |
+#         sudo apt-get update
+#         sudo apt-get install -y libunwind-dev
+#         sudo apt-get install -y \
+#           build-essential \
+#           git \
+#           ffmpeg \
+#           libsdl2-dev \
+#           libsdl2-image-dev \
+#           libsdl2-mixer-dev \
+#           libsdl2-ttf-dev \
+#           libportmidi-dev \
+#           libswscale-dev \
+#           libavformat-dev \
+#           libavcodec-dev \
+#           zlib1g-dev \
+#           autoconf \
+#           automake \
+#           libtool \
+#           libltdl-dev \
+#           pkg-config \
+#           libffi-dev \
+#           m4 \
+#           openjdk-17-jdk
+
+#     - name: Install Python build tools
+#       run: |
+#         pip install --upgrade pip
+#         pip install Cython==0.29.37
+#         pip install buildozer
+#         buildozer --version
+
+#     - name: Build APK
+#       run: |
+#         export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+#         yes | buildozer android debug 2>&1 | tee build.log
+
+#     - name: Find APK
+#       if: always()
+#       run: find . -name "*.apk" 2>/dev/null || echo "No APKs found"
+
+#     - name: Prepare APK
+#       run: |
+#         mkdir -p output
+#         find bin/ -name "*.apk" -exec cp {} output/ \; 2>/dev/null || true
+#         find .buildozer -name "*.apk" -exec cp {} output/ \; 2>/dev/null || true
+#         ls -la output/
+
+#     - name: Upload APK
+#       uses: actions/upload-artifact@v4
+#       if: success()
+#       with:
+#         name: android-apk
+#         path: output/*.apk
+
+#     - name: Upload build log on failure
+#       uses: actions/upload-artifact@v4
+#       if: failure()
+#       with:
+#         name: build-log
+#         path: build.log
+
+
+
 name: Build Android APK
 
 on:
@@ -224,10 +310,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # ubuntu-latest = ubuntu-24 which breaks NDK r25b + Kivy
+    runs-on: ubuntu-22.04   # safer for buildozer + NDK
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -267,29 +354,54 @@ jobs:
         pip install buildozer
         buildozer --version
 
+    # 🔥 Clean previous builds (important)
+    - name: Clean previous builds
+      run: |
+        rm -rf .buildozer
+        rm -rf bin
+        rm -rf output
+
     - name: Build APK
       run: |
         export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
         yes | buildozer android debug 2>&1 | tee build.log
 
-    - name: Find APK
+    # 🔍 FULL DEBUG (very important)
+    - name: Debug - Locate APK
       if: always()
-      run: find . -name "*.apk" 2>/dev/null || echo "No APKs found"
+      run: |
+        echo "==== ALL APK FILES ===="
+        find . -name "*.apk" 2>/dev/null || echo "No APKs found"
 
+        echo "==== BIN FOLDER ===="
+        ls -la bin/ 2>/dev/null || echo "bin/ not found"
+
+        echo "==== BUILDOZER DIST ===="
+        find .buildozer -name "*.apk" 2>/dev/null | head -20
+
+    # ✅ Collect APK safely
     - name: Prepare APK
       run: |
         mkdir -p output
+
+        # Standard location
         find bin/ -name "*.apk" -exec cp {} output/ \; 2>/dev/null || true
+
+        # Buildozer internal output
         find .buildozer -name "*.apk" -exec cp {} output/ \; 2>/dev/null || true
+
+        echo "==== FINAL OUTPUT FOLDER ===="
         ls -la output/
 
+    # ✅ Upload ONLY if APK exists
     - name: Upload APK
       uses: actions/upload-artifact@v4
-      if: success()
+      if: success() && hashFiles('output/*.apk') != ''
       with:
         name: android-apk
         path: output/*.apk
 
+    # 📄 Always upload build log if something goes wrong
     - name: Upload build log on failure
       uses: actions/upload-artifact@v4
       if: failure()

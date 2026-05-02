@@ -17,44 +17,39 @@ import argparse
 import json
 import time
 import numpy as np
-import torch
+import tensorflow as tf
 import flwr as fl
 from flwr.common import Metrics, Parameters, ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server.strategy import FedAvg
 from typing import List, Tuple, Optional, Dict, Union
 from collections import OrderedDict
 
-from model import get_model, NUM_CLASSES
-from data_utils import get_client_loaders   # server uses test set for global eval
+from tf_model import get_tf_model, NUM_CLASSES
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def get_parameters(model):
-    return [val.cpu().numpy() for _, val in model.state_dict().items()]
+    """Extract model weights as NumPy arrays for Flower."""
+    return [w.numpy() for w in model.trainable_weights]
 
 
 def set_parameters(model, parameters):
-    params_dict = zip(model.state_dict().keys(), parameters)
-    state_dict  = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
-    model.load_state_dict(state_dict, strict=True)
+    """Set model weights from NumPy arrays from Flower."""
+    model.trainable_weights[0].assign(parameters[0])
+    for i, w in enumerate(model.trainable_weights[1:]):
+        w.assign(parameters[i+1])
 
 
-def evaluate_global(model, test_loader, device="cpu"):
-    model.eval()
-    model.to(device)
-    criterion = torch.nn.CrossEntropyLoss()
-    total_loss, correct, total = 0.0, 0, 0
-    with torch.no_grad():
-        for x, y in test_loader:
-            x, y = x.to(device), y.to(device)
-            out   = model(x)
-            loss  = criterion(out, y)
-            total_loss += loss.item() * x.size(0)
-            pred        = out.argmax(dim=1)
-            correct    += pred.eq(y).sum().item()
-            total      += x.size(0)
-    return total_loss / total, correct / total
+def evaluate_global(model, test_x, test_y):
+    """Evaluate TensorFlow model on test data."""
+    model.compile(
+        optimizer='adam',
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        metrics=['accuracy']
+    )
+    loss, accuracy = model.evaluate(test_x, test_y, verbose=0)
+    return loss, accuracy
 
 
 # ── logging strategy ──────────────────────────────────────────────────────────
@@ -62,11 +57,11 @@ def evaluate_global(model, test_loader, device="cpu"):
 class LoggingFedAvg(FedAvg):
     """FedAvg + per-round logging to round_log.json."""
 
-    def __init__(self, *args, variant="large", test_loader=None, device="cpu", **kwargs):
+    def __init__(self, *args, variant="large", test_x=None, test_y=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.variant     = variant
-        self.test_loader = test_loader
-        self.device      = device
+        self.test_x      = test_x
+        self.test_y      = test_y
         self.round_log   = []
         self.start_time  = time.time()
 
@@ -80,11 +75,11 @@ class LoggingFedAvg(FedAvg):
             upload_kbs   = [r.metrics.get("upload_kb",  0.0) for _, r in results]
 
             # Server-side global eval
-            if aggregated[0] is not None and self.test_loader is not None:
-                model = get_model(self.variant)
+            if aggregated[0] is not None and self.test_x is not None:
+                model = get_tf_model(self.variant)
                 params = parameters_to_ndarrays(aggregated[0])
                 set_parameters(model, params)
-                s_loss, s_acc = evaluate_global(model, self.test_loader, self.device)
+                s_loss, s_acc = evaluate_global(model, self.test_x, self.test_y)
             else:
                 s_loss, s_acc = 0.0, 0.0
 
@@ -148,14 +143,14 @@ def main():
     print(f"         Dirichlet α   : {args.alpha}")
     print()
 
-    # Load test set for global evaluation after each round
-    _, test_loader, _ = get_client_loaders(
-        num_clients=args.clients, batch_size=256, alpha=args.alpha
-    )
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Generate synthetic test data for global evaluation
+    print(f"[server] Generating synthetic test data...")
+    test_x = np.random.randn(1000, 28, 28, 1).astype(np.float32)
+    test_y = np.random.randint(0, NUM_CLASSES, 1000)
+    print(f"[server] Test data ready: {len(test_x)} samples")
 
     # Initial model parameters broadcast to clients
-    init_model  = get_model(args.variant)
+    init_model  = get_tf_model(args.variant)
     init_params = ndarrays_to_parameters(get_parameters(init_model))
 
     strategy = LoggingFedAvg(
@@ -166,8 +161,8 @@ def main():
         initial_parameters=init_params,
         fit_metrics_aggregation_fn=weighted_average,
         variant=args.variant,
-        test_loader=test_loader,
-        device=device,
+        test_x=test_x,
+        test_y=test_y,
     )
 
     fl.server.start_server(
