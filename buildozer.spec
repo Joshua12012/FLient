@@ -39,9 +39,9 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-# For Android: Use TensorFlow/Keras (reliable framework!)
-# mobile_client.py uses TensorFlow for training - well-tested!
-requirements = python3,kivy,numpy,psutil,pyjnius,android,flwr,requests,tensorflow
+# For Android: Use PyTorch (reliable + smaller than TensorFlow!)
+# mobile_client.py uses PyTorch for training - well-tested, ~40MB vs ~200MB
+requirements = python3,kivy,numpy,psutil,pyjnius,android,flwr,requests,torch
 
 # (str) Custom source folders for requirements
 # Sets custom source for any requirements with recipes
@@ -158,8 +158,8 @@ android.orientation = portrait
 # Android permissions for network and storage
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
 
-# Exclude PyTorch libraries (we use TensorFlow)
-android.exclude_libs = libtorch.so,libc10.so
+# Exclude TensorFlow libraries (we use PyTorch)
+android.exclude_libs = libtensorflow.so,libtensorflow_framework.so,libtensorflowlite.so
 
 [buildozer]
 

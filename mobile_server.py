@@ -1,7 +1,7 @@
 """
-mobile_server.py — Lightweight Flower Server using TensorFlow
+mobile_server.py — Lightweight Flower Server using PyTorch
 
-Uses TensorFlow/Keras on server side to match mobile_client.py.
+Uses PyTorch on server side to match mobile_client.py.
 Both client and server use the same framework for compatibility.
 """
 
@@ -9,7 +9,9 @@ import argparse
 import json
 import time
 import numpy as np
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import flwr as fl
 from flwr.common import Parameters, ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server.strategy import FedAvg
@@ -17,58 +19,42 @@ from typing import List, Tuple, Dict
 import logging
 import os
 
-# Suppress TensorFlow warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
 from src.utils.connection_utils import find_available_port, is_port_available
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def create_model(num_classes=10):
-    """
-    Create TensorFlow/Keras model matching mobile_client.py.
-    Same architecture ensures weight compatibility.
-    """
-    model = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(28, 28, 1)),
-        tf.keras.layers.Conv2D(8, 3, activation='relu', padding='same'),
-        tf.keras.layers.MaxPooling2D(2),
-        tf.keras.layers.Conv2D(16, 3, activation='relu', padding='same'),
-        tf.keras.layers.MaxPooling2D(2),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.Dropout(0.2),
-        tf.keras.layers.Dense(num_classes, activation='softmax')
-    ])
+class MobileModel(nn.Module):
+    """PyTorch CNN model matching mobile_client.py."""
     
-    model.compile(
-        optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9),
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    
-    return model
+    def __init__(self, num_classes=10):
+        super(MobileModel, self).__init__()
+        self.conv1 = nn.Conv2d(1, 8, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(8, 16, kernel_size=3, padding=1)
+        self.fc1 = nn.Linear(7 * 7 * 16, 64)
+        self.fc2 = nn.Linear(64, num_classes)
+        self.pool = nn.MaxPool2d(2, 2)
+        
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = x.reshape(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
 
 def get_parameters(model):
     """Extract parameters as numpy arrays."""
-    return [w.numpy() for w in model.trainable_weights]
+    return [val.cpu().numpy() for _, val in model.state_dict().items()]
 
 
 def set_parameters(model, parameters):
-    """Set parameters from numpy arrays."""
-    weight_shapes = [w.shape for w in model.trainable_weights]
-    weight_values = []
-    idx = 0
-    
-    for shape in weight_shapes:
-        size = np.prod(shape)
-        weight_values.append(parameters[idx].reshape(shape))
-        idx += 1
-    
-    model.set_weights(weight_values)
+    """Set model parameters from numpy arrays."""
+    params_dict = zip(model.state_dict().keys(), parameters)
+    state_dict = {k: torch.tensor(v) for k, v in params_dict}
+    model.load_state_dict(state_dict, strict=True)
 
 
 class MobileFedAvg(FedAvg):
@@ -114,7 +100,7 @@ class MobileFedAvg(FedAvg):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mobile TensorFlow Flower Server")
+    parser = argparse.ArgumentParser(description="Mobile PyTorch Flower Server")
     parser.add_argument("--rounds", type=int, default=10, help="Number of FL rounds")
     parser.add_argument("--clients", type=int, default=3, help="Min clients per round")
     parser.add_argument("--port", type=int, default=8080, help="Server port")
@@ -132,16 +118,16 @@ def main():
             logger.error(f"Could not find available port: {e}")
             raise
     
-    print(f"[Mobile Server] Starting TensorFlow Flower server")
+    print(f"[Mobile Server] Starting PyTorch Flower server")
     print(f"         FL rounds     : {args.rounds}")
     print(f"         min clients   : {args.clients}")
     print(f"         port          : {port}")
     print(f"         num_classes   : {args.num_classes}")
-    print(f"         Compatible with: mobile_client.py (TensorFlow/Keras)")
+    print(f"         Compatible with: mobile_client.py (PyTorch)")
     print()
     
-    # Create TensorFlow model
-    model = create_model(num_classes=args.num_classes)
+    # Create PyTorch model
+    model = MobileModel(num_classes=args.num_classes)
     init_params = ndarrays_to_parameters(get_parameters(model))
     
     # Strategy

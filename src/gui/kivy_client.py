@@ -1,5 +1,5 @@
 """
-kivy_client.py — Kivy GUI for mobile federated learning client
+kivy_client.py — PyTorch Federated Learning Client
 
 Simplified Android app for participating in federated learning using Flower framework.
 Connects to a server running on your PC for federated training.
@@ -176,7 +176,7 @@ class KivyFLApp(App):
     def initialize_flower_client(self, server, client_id):
         """Initialize Flower client and verify FL connection (not just socket test)."""
         try:
-            self.append_status('[1/3] Importing TensorFlow client...')
+            self.append_status('[1/3] Importing PyTorch client...')
             from mobile_client import MobileFlowerClient
             
             self.append_status('[2/3] Loading data and creating model...')
@@ -217,8 +217,9 @@ class KivyFLApp(App):
                 return
             
             self.connected = True
-            self.append_status(f'[OK] FL client initialized and ready for {server}')
-            self.append_status(f'Model: {self.fl_client.model.count_params():,} parameters')
+            self.append_status(f'[OK] PyTorch FL client initialized for {server}')
+            param_count = sum(p.numel() for p in self.fl_client.model.parameters())
+            self.append_status(f'Model: {param_count:,} parameters')
             self.append_status('You can now start federated learning.')
             Clock.schedule_once(lambda dt: self.enable_start_button(), 0)
             

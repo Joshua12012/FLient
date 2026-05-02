@@ -1,6 +1,6 @@
 # Android-specific requirements for Buildozer
 # These are the Python packages that will be included in the Android APK
-# NOTE: Uses TensorFlow/Keras for reliable ML training
+# NOTE: Uses PyTorch (reliable + smaller than TensorFlow!)
 
 # Core Kivy for GUI
 kivy>=2.0.0
@@ -8,8 +8,8 @@ kivy>=2.0.0
 # Flower framework for federated learning
 flwr==1.7.0
 
-# TensorFlow for ML (reliable framework, supports training)
-tensorflow>=2.13.0
+# PyTorch for ML (reliable, smaller than TensorFlow, supports training)
+torch>=2.0.0
 
 # Numerical computing
 numpy>=1.24.0

@@ -1,14 +1,16 @@
 """
-mobile_client.py — TensorFlow/Keras Federated Learning Client
+mobile_client.py — PyTorch Mobile Federated Learning Client
 
-Uses TensorFlow/Keras for reliable training on Android.
-Works with mobile_server.py for federated learning.
+Uses PyTorch (reliable + smaller than TensorFlow).
+~40MB vs ~200MB for TensorFlow, well-tested framework.
 """
 
 import argparse
 import time
 import numpy as np
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import flwr as fl
 import sys
 import os
@@ -22,43 +24,44 @@ from src.utils.connection_utils import (
     resolve_server_address,
 )
 
-# Suppress TensorFlow warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def create_model(num_classes=10):
-    """
-    Create a TensorFlow/Keras CNN model.
-    Lightweight but reliable - uses tested framework.
-    """
-    model = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(28, 28, 1)),
-        tf.keras.layers.Conv2D(8, 3, activation='relu', padding='same'),
-        tf.keras.layers.MaxPooling2D(2),
-        tf.keras.layers.Conv2D(16, 3, activation='relu', padding='same'),
-        tf.keras.layers.MaxPooling2D(2),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.Dropout(0.2),
-        tf.keras.layers.Dense(num_classes, activation='softmax')
-    ])
+class MobileModel(nn.Module):
+    """PyTorch CNN model for mobile federated learning."""
     
-    model.compile(
-        optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9),
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    
-    return model
+    def __init__(self, num_classes=10):
+        super(MobileModel, self).__init__()
+        # Conv layers
+        self.conv1 = nn.Conv2d(1, 8, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(8, 16, kernel_size=3, padding=1)
+        
+        # FC layers
+        self.fc1 = nn.Linear(7 * 7 * 16, 64)
+        self.fc2 = nn.Linear(64, num_classes)
+        
+        # Pooling
+        self.pool = nn.MaxPool2d(2, 2)
+        
+    def forward(self, x):
+        # Conv1 -> ReLU -> Pool
+        x = self.pool(F.relu(self.conv1(x)))
+        # Conv2 -> ReLU -> Pool
+        x = self.pool(F.relu(self.conv2(x)))
+        # Flatten (use reshape instead of view to handle non-contiguous tensors)
+        x = x.reshape(x.size(0), -1)
+        # FC1 -> ReLU
+        x = F.relu(self.fc1(x))
+        # FC2
+        x = self.fc2(x)
+        return x
 
 
 class MobileFlowerClient(fl.client.NumPyClient):
     """
-    Flower client using TensorFlow/Keras.
-    Reliable framework, well-tested, supports training.
+    Flower client using PyTorch.
+    Reliable framework, smaller than TensorFlow, supports training.
     """
     
     def __init__(self, client_id, num_clients, epochs=1, data_path=None):
@@ -66,14 +69,23 @@ class MobileFlowerClient(fl.client.NumPyClient):
         self.num_clients = num_clients
         self.epochs = epochs
         
-        print(f"[Mobile Client {client_id}] Initializing TensorFlow/Keras model...")
+        print(f"[Mobile Client {client_id}] Initializing PyTorch model...")
         
         # Load or generate data
         self.x_train, self.y_train, self.x_test, self.y_test, num_classes = self._load_data(data_path)
         
-        # Create TensorFlow model
-        self.model = create_model(num_classes=num_classes)
-        print(f"[Mobile Client {client_id}] Model ready with {self.model.count_params():,} parameters")
+        # Convert numpy to PyTorch tensors
+        self.x_train = torch.FloatTensor(self.x_train).permute(0, 3, 1, 2)  # NHWC -> NCHW
+        self.y_train = torch.LongTensor(self.y_train)
+        self.x_test = torch.FloatTensor(self.x_test).permute(0, 3, 1, 2)
+        self.y_test = torch.LongTensor(self.y_test)
+        
+        # Create PyTorch model
+        self.model = MobileModel(num_classes=num_classes)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01, momentum=0.9)
+        
+        print(f"[Mobile Client {client_id}] Model ready with {sum(p.numel() for p in self.model.parameters()):,} parameters")
     
     def _load_data(self, data_path):
         """Load data or generate synthetic data for testing."""
@@ -120,20 +132,13 @@ class MobileFlowerClient(fl.client.NumPyClient):
     
     def get_parameters(self, config):
         """Return model parameters as numpy arrays."""
-        return [w.numpy() for w in self.model.trainable_weights]
+        return [val.cpu().numpy() for _, val in self.model.state_dict().items()]
     
     def set_parameters(self, parameters):
         """Set model parameters from numpy arrays."""
-        weight_shapes = [w.shape for w in self.model.trainable_weights]
-        weight_values = []
-        idx = 0
-        
-        for shape in weight_shapes:
-            size = np.prod(shape)
-            weight_values.append(parameters[idx].reshape(shape))
-            idx += 1
-        
-        self.model.set_weights(weight_values)
+        params_dict = zip(self.model.state_dict().keys(), parameters)
+        state_dict = {k: torch.tensor(v) for k, v in params_dict}
+        self.model.load_state_dict(state_dict, strict=True)
     
     def fit(self, parameters, config):
         """Train locally with global parameters."""
@@ -143,15 +148,33 @@ class MobileFlowerClient(fl.client.NumPyClient):
         print(f"[Mobile Client {self.client_id}] Training for {self.epochs} epochs...")
         t0 = time.time()
         
-        # Train
-        history = self.model.fit(
-            self.x_train, self.y_train,
-            epochs=self.epochs,
-            batch_size=32,
-            verbose=0  # Minimal logging
-        )
+        # Training loop
+        batch_size = 32
+        n_samples = len(self.x_train)
+        n_batches = (n_samples + batch_size - 1) // batch_size
         
-        train_loss = history.history['loss'][-1]
+        self.model.train()
+        for epoch in range(self.epochs):
+            epoch_loss = 0
+            indices = torch.randperm(n_samples)
+            
+            for i in range(n_batches):
+                batch_idx = indices[i * batch_size:(i + 1) * batch_size]
+                batch_x = self.x_train[batch_idx]
+                batch_y = self.y_train[batch_idx]
+                
+                self.optimizer.zero_grad()
+                outputs = self.model(batch_x)
+                loss = self.criterion(outputs, batch_y)
+                loss.backward()
+                self.optimizer.step()
+                
+                epoch_loss += loss.item()
+            
+            avg_loss = epoch_loss / n_batches
+            print(f"Epoch {epoch+1}/{self.epochs}, Loss: {avg_loss:.4f}")
+        
+        train_loss = avg_loss
         train_time = time.time() - t0
         
         print(f"[Mobile Client {self.client_id}] loss={train_loss:.4f} time={train_time:.1f}s")
@@ -168,10 +191,12 @@ class MobileFlowerClient(fl.client.NumPyClient):
         """Evaluate global model."""
         self.set_parameters(parameters)
         
-        loss, accuracy = self.model.evaluate(
-            self.x_test, self.y_test,
-            verbose=0
-        )
+        self.model.eval()
+        with torch.no_grad():
+            outputs = self.model(self.x_test)
+            loss = self.criterion(outputs, self.y_test).item()
+            _, predicted = torch.max(outputs.data, 1)
+            accuracy = (predicted == self.y_test).sum().item() / len(self.y_test)
         
         print(f"[Mobile Client {self.client_id}] Eval: loss={loss:.4f} acc={accuracy:.4f}")
         
@@ -179,7 +204,7 @@ class MobileFlowerClient(fl.client.NumPyClient):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mobile TensorFlow/Keras Flower Client")
+    parser = argparse.ArgumentParser(description="Mobile PyTorch Flower Client")
     parser.add_argument("--server", type=str, default="127.0.0.1:8080",
                         help="Server IP:port")
     parser.add_argument("--client_id", type=int, default=0,
@@ -192,10 +217,10 @@ def main():
                         help="Path to data file (optional)")
     args = parser.parse_args()
     
-    print(f"[Mobile Client {args.client_id}] TensorFlow/Keras Federated Learning Client")
+    print(f"[Mobile Client {args.client_id}] PyTorch Federated Learning Client")
     print(f"  Server: {args.server}")
     print(f"  Epochs: {args.epochs}")
-    print(f"  Using reliable TensorFlow framework!")
+    print(f"  Using PyTorch (smaller than TensorFlow)!")
     
     # Resolve server address with auto-discovery
     resolved_server = resolve_server_address(
