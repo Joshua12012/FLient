@@ -1,6 +1,6 @@
 # Android-specific requirements for Buildozer
 # These are the Python packages that will be included in the Android APK
-# NOTE: Uses PyTorch (reliable + smaller than TensorFlow!)
+# NOTE: Pure NumPy ONLY - smallest possible size (~5MB)
 
 # Core Kivy for GUI
 kivy>=2.0.0
@@ -8,10 +8,7 @@ kivy>=2.0.0
 # Flower framework for federated learning
 flwr==1.7.0
 
-# PyTorch for ML (reliable, smaller than TensorFlow, supports training)
-torch>=2.0.0
-
-# Numerical computing
+# Numerical computing (NO PyTorch/TensorFlow - pure NumPy only)
 numpy>=1.24.0
 
 # System profiling

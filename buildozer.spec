@@ -39,8 +39,8 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-# PyTorch for reliable ML (smaller than TensorFlow)
-requirements = python3,kivy,numpy,psutil,pyjnius,android,flwr,requests,torch
+# Pure NumPy ONLY - smallest possible size (~5MB)
+requirements = python3,kivy,numpy,psutil,pyjnius,android,flwr,requests
 
 # (str) Custom source folders for requirements
 # Sets custom source for any requirements with recipes

@@ -1,8 +1,8 @@
 """
-kivy_client.py — PyTorch Federated Learning Client
+kivy_client.py — Pure NumPy Federated Learning Client
 
 Simplified Android app for participating in federated learning using Flower framework.
-Connects to a server running on your PC for federated training.
+Uses pure NumPy for tiny APK size (~5MB). Connects to server on your PC.
 """
 
 import os
@@ -176,7 +176,7 @@ class KivyFLApp(App):
     def initialize_flower_client(self, server, client_id):
         """Initialize Flower client and verify FL connection (not just socket test)."""
         try:
-            self.append_status('[1/3] Importing PyTorch client...')
+            self.append_status('[1/3] Importing NumPy client...')
             from mobile_client import MobileFlowerClient
             
             self.append_status('[2/3] Loading data and creating model...')
@@ -217,8 +217,8 @@ class KivyFLApp(App):
                 return
             
             self.connected = True
-            self.append_status(f'[OK] PyTorch FL client initialized for {server}')
-            param_count = sum(p.numel() for p in self.fl_client.model.parameters())
+            self.append_status(f'[OK] NumPy FL client initialized for {server}')
+            param_count = sum(p.size for p in self.fl_client.model.get_weights_as_list())
             self.append_status(f'Model: {param_count:,} parameters')
             self.append_status('You can now start federated learning.')
             Clock.schedule_once(lambda dt: self.enable_start_button(), 0)
