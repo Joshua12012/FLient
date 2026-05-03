@@ -177,7 +177,6 @@ jobs:
         mkdir -p output
         find bin/ -name "*.apk" -exec cp {} output/ \; 2>/dev/null || true
         find .buildozer -name "*.apk" -exec cp {} output/ \; 2>/dev/null || true
-        ls -la output/
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
@@ -185,6 +184,7 @@ jobs:
       with:
         name: android-apk
         path: output/*.apk
+        if-no-files-found: warn
 
     - name: Upload build log on failure
       uses: actions/upload-artifact@v4
