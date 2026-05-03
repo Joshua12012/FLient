@@ -168,27 +168,47 @@ jobs:
         export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
         yes | buildozer android debug 2>&1 | tee build.log
 
+    # 🔍 DEBUG: Find APK location (always run)
     - name: Find APK
       if: always()
-      run: find . -name "*.apk" 2>/dev/null || echo "No APKs found"
+      run: |
+        echo "=== Searching for APK files ==="
+        find . -name "*.apk" -type f 2>/dev/null
+        echo "=== bin/ directory ==="
+        ls -la bin/ 2>/dev/null || echo "bin/ not found"
+        echo "=== .buildozer/ directory ==="
+        find .buildozer -name "*.apk" -type f 2>/dev/null || echo "No APK in .buildozer"
 
+    # ✅ Prepare APK for upload (always run to ensure we capture it)
     - name: Prepare APK
+      if: always()
       run: |
         mkdir -p output
-        find bin/ -name "*.apk" -exec cp {} output/ \; 2>/dev/null || true
-        find .buildozer -name "*.apk" -exec cp {} output/ \; 2>/dev/null || true
+        
+        # Copy from all possible locations
+        find bin/ -name "*.apk" -type f -exec cp -v {} output/ \; 2>/dev/null || true
+        find .buildozer -name "*.apk" -type f -exec cp -v {} output/ \; 2>/dev/null || true
+        
+        echo "=== Final output folder ==="
+        ls -la output/
+        echo "=== APK files count ==="
+        ls output/*.apk 2>/dev/null | wc -l
 
+    # ✅ Upload APK (always try, even if build had warnings)
     - name: Upload APK
       uses: actions/upload-artifact@v4
-      if: success()
+      if: always()
       with:
         name: android-apk
         path: output/*.apk
         if-no-files-found: warn
+        retention-days: 5
 
-    - name: Upload build log on failure
+    # 📄 Upload build log for debugging
+    - name: Upload build log
       uses: actions/upload-artifact@v4
-      if: failure()
+      if: always()
       with:
         name: build-log
         path: build.log
+        retention-days: 5
