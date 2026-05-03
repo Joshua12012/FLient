@@ -25,3 +25,6 @@ mobile_server.py
 mobile_server_log.json
 mobile_server_log.json
 .gradio/
+web/server/1.26.0
+web/server/2.16.0
+web/server/4.22.0
