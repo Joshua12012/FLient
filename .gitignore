@@ -28,3 +28,8 @@ mobile_server_log.json
 web/server/1.26.0
 web/server/2.16.0
 web/server/4.22.0
+web/server/venv
+web/server/__pycache__
+web/server/data
+web/client/__pycache__
+web/client/downloads
