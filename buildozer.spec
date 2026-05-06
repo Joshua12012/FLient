@@ -36,7 +36,7 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy,flwr,numpy,psutil,pyjnius,android,torch
+requirements = python3,kivy,flwr,numpy,psutil,pyjnius,android
 
 # (str) Custom source folders for requirements
 # Sets custom source for any requirements with recipes
@@ -53,7 +53,7 @@ android.arch = arm64-v8a
 android.minapi = 21
 
 # (int) Android NDK API level to use
-android.ndk = 25b
+android.ndk = 21e
 
 # (int) Android SDK API level to use
 android.sdk = 33
@@ -140,7 +140,7 @@ android.logcat_filters = *:S python:D
 
 # (str) The Android arch to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
 # In past, was `android.arch` as we weren't supporting builds for multiple archs at the same time.
-android.archs = arm64-v8a,armeabi-v7a
+android.archs = arm64-v8a
 
 # (int) overrides automatic version code computation for version checks
 # android.numeric_version = 1

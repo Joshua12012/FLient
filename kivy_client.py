@@ -22,52 +22,139 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.scrollview import ScrollView
 from kivy.properties import StringProperty
 from kivy.clock import Clock
+from kivy.core.window import Window
+from kivy.utils import get_color_from_hex
 
 
 class KivyFLApp(App):
     status_text = StringProperty('Ready')
 
     def build(self):
-        root = BoxLayout(orientation='vertical', padding=12, spacing=12)
+        # Set background color
+        Window.clearcolor = get_color_from_hex('#1a1a2e')
+        
+        root = BoxLayout(orientation='vertical', padding=20, spacing=15)
 
-        # Title
-        root.add_widget(Label(text='Federated Learning Client', 
-                             font_size=20, size_hint_y=None, height=50))
+        # Header with gradient-like effect
+        header = BoxLayout(orientation='vertical', size_hint_y=None, height=80)
+        title = Label(
+            text='🌸 Federated Learning',
+            font_size=28,
+            font_name='Roboto',
+            color=get_color_from_hex('#ffffff'),
+            size_hint_y=None,
+            height=50
+        )
+        subtitle = Label(
+            text='Edge Client for Mobile Devices',
+            font_size=14,
+            color=get_color_from_hex('#a0a0a0'),
+            size_hint_y=None,
+            height=30
+        )
+        header.add_widget(title)
+        header.add_widget(subtitle)
+        root.add_widget(header)
 
-        # Server configuration
-        config = GridLayout(cols=2, row_default_height=45, size_hint_y=None, spacing=8)
+        # Server configuration card
+        config_container = BoxLayout(orientation='vertical', size_hint_y=None, height=200)
+        config_container.padding = 15
+        config_container.spacing = 10
+        
+        config_label = Label(
+            text='⚙️  Server Configuration',
+            font_size=18,
+            color=get_color_from_hex('#ffffff'),
+            size_hint_y=None,
+            height=35,
+            halign='left'
+        )
+        config_container.add_widget(config_label)
+
+        config = GridLayout(cols=2, row_default_height=50, size_hint_y=None, spacing=10)
         config.bind(minimum_height=config.setter('height'))
 
-        config.add_widget(Label(text='Server IP:Port:', size_hint_x=None, width=120))
-        self.server_input = TextInput(text='192.168.1.100:8080', multiline=False)
+        # Server IP
+        config.add_widget(Label(text='Server IP:', size_hint_x=None, width=100, 
+                               color=get_color_from_hex('#e0e0e0'), halign='right'))
+        self.server_input = TextInput(
+            text='192.168.1.100:8080', 
+            multiline=False,
+            size_hint_x=1,
+            background_color=get_color_from_hex('#2d2d44'),
+            foreground_color=get_color_from_hex('#ffffff'),
+            cursor_color=get_color_from_hex('#7b68ee')
+        )
         config.add_widget(self.server_input)
 
-        config.add_widget(Label(text='Client ID:', size_hint_x=None, width=120))
-        self.client_id_input = TextInput(text='0', multiline=False)
+        # Client ID
+        config.add_widget(Label(text='Client ID:', size_hint_x=None, width=100,
+                               color=get_color_from_hex('#e0e0e0'), halign='right'))
+        self.client_id_input = TextInput(
+            text='0', 
+            multiline=False,
+            size_hint_x=1,
+            background_color=get_color_from_hex('#2d2d44'),
+            foreground_color=get_color_from_hex('#ffffff'),
+            cursor_color=get_color_from_hex('#7b68ee')
+        )
         config.add_widget(self.client_id_input)
 
-        config.add_widget(Label(text='Total clients:', size_hint_x=None, width=120))
-        self.num_clients_input = TextInput(text='5', multiline=False)
+        # Total clients
+        config.add_widget(Label(text='Total Clients:', size_hint_x=None, width=100,
+                               color=get_color_from_hex('#e0e0e0'), halign='right'))
+        self.num_clients_input = TextInput(
+            text='5', 
+            multiline=False,
+            size_hint_x=1,
+            background_color=get_color_from_hex('#2d2d44'),
+            foreground_color=get_color_from_hex('#ffffff'),
+            cursor_color=get_color_from_hex('#7b68ee')
+        )
         config.add_widget(self.num_clients_input)
 
-        root.add_widget(config)
+        config_container.add_widget(config)
+        root.add_widget(config_container)
 
-        # Start button
-        self.fl_btn = Button(text='Start Federated Learning', 
-                            size_hint_y=None, height=60, font_size=16)
+        # Start button with modern styling
+        self.fl_btn = Button(
+            text='▶ Start Training',
+            size_hint_y=None, 
+            height=65, 
+            font_size=18,
+            background_color=get_color_from_hex('#7b68ee'),
+            color=get_color_from_hex('#ffffff'),
+            bold=True
+        )
         self.fl_btn.bind(on_press=self.on_start_flower_client)
         root.add_widget(self.fl_btn)
 
-        # Status log
-        root.add_widget(Label(text='Status:', size_hint_y=None, height=30, font_size=14))
-        status_scroll = ScrollView(size_hint=(1, 1))
-        self.status_label = Label(text=self.status_text, size_hint_y=None, 
-                                 valign='top', halign='left', font_size=12)
+        # Status section
+        status_header = Label(
+            text='📊 Training Status',
+            font_size=16,
+            color=get_color_from_hex('#ffffff'),
+            size_hint_y=None,
+            height=30,
+            halign='left'
+        )
+        root.add_widget(status_header)
+
+        status_scroll = ScrollView(size_hint=(1, 1), bar_color=get_color_from_hex('#7b68ee'))
+        self.status_label = Label(
+            text=self.status_text, 
+            size_hint_y=None, 
+            valign='top', 
+            halign='left', 
+            font_size=13,
+            color=get_color_from_hex('#e0e0e0'),
+            text_size=(None, None)
+        )
         self.status_label.bind(texture_size=self.status_label.setter('size'))
         status_scroll.add_widget(self.status_label)
         root.add_widget(status_scroll)
 
-        self.update_status('Ready. Enter server details and start federated learning.')
+        self.update_status('✓ Ready to connect\nEnter your server IP and client ID above.')
         Clock.schedule_once(lambda dt: self.update_status(self.status_text), 0)
 
         return root
@@ -106,12 +193,12 @@ class KivyFLApp(App):
         
         # Import Flower client here to avoid issues on Android
         try:
-            from client import main as client_main
+            from client_tf import main as client_main
             import sys
             
             # Set command line arguments for client
             sys.argv = [
-                'client.py',
+                'client_tf.py',
                 '--server', server,
                 '--client_id', client_id,
                 '--num_clients', num_clients,
@@ -120,13 +207,13 @@ class KivyFLApp(App):
                 '--alpha', '0.5',
             ]
             
-            self.append_status('Initializing Flower client...')
+            self.append_status('Initializing Flower client (TensorFlow)...')
             client_main()
             self.append_status('Flower client finished successfully.')
             
         except ImportError as e:
             self.append_status(f'Error importing client module: {e}')
-            self.append_status('Make sure client.py is included in the app package.')
+            self.append_status('Make sure client_tf.py is included in the app package.')
         except Exception as exc:
             self.append_status(f'Flower client failed: {exc}')
         finally:

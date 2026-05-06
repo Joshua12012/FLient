@@ -1,0 +1,14 @@
+# --- UI ---
+gradio>=4.44.0
+
+# --- Federated learning ---
+flwr>=1.8.0
+tensorflow>=2.16.0
+
+# --- Data shared with the server (so partition + model code matches) ---
+tensorflow-datasets>=4.9.0
+numpy>=1.26.0,<2.0.0
+pillow>=11.0.0
+
+# --- HTTP polling for metrics + adaptive downloads ---
+requests>=2.32.0

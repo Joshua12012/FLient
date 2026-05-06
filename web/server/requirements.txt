@@ -1,0 +1,21 @@
+# --- Web server core ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.17
+
+# --- Federated learning ---
+flwr>=1.8.0
+tensorflow>=2.16.0
+
+# --- Data + experiments ---
+tensorflow-datasets>=4.9.0
+numpy>=1.26.0,<2.0.0
+pillow>=11.0.0
+scikit-learn>=1.5.0
+
+# --- Metrics + utilities ---
+psutil>=5.9.0
+requests>=2.32.0
+pydantic>=2.9.0
+python-dotenv>=1.0.0
+pyngrok>=7.2.0
