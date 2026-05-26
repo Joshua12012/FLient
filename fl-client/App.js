@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput, SafeAreaView } from 'react-native';
 
 export default function App() {
-  const [serverId, setServerId] = useState('100.X.Y.Z'); // Replace with your host Tailscale IP
+  const [serverId, setServerId] = useState('100.87.17.13'); // Replace with your host Tailscale IP
   const [clientId] = useState(`client-${Math.random().toString(36).substring(7)}`);
   const [status, setStatus] = useState('Disconnected');
   const [logs, setLogs] = useState([]);
@@ -17,43 +17,58 @@ export default function App() {
   const connectToServer = () => {
     if (!serverId) return;
     setStatus('Connecting...');
-    addLog(`Initiating socket handshake to server: ${serverId}`);
     
-    ws.current = new WebSocket(`ws://${serverId}:8000/ws/fl`);
+    // Clean up the input string
+    let cleanIp = serverId.replace('http://', '').replace('https://', '').trim();
+    if (!cleanIp.includes(':')) {
+      cleanIp = `${cleanIp}:8000`;
+    }
 
+    addLog(`Opening live WebSocket stream to: ws://${cleanIp}/ws/fl`);
+    
+    // Establish a persistent WebSocket connection to the FastAPI server
+    ws.current = new WebSocket(`ws://${cleanIp}/ws/fl`);
+
+    // Handle successful connection handshake
     ws.current.onopen = () => {
       setStatus('Connected');
-      addLog(`Secure session verified. Assigned ID: ${clientId}`);
+      addLog(`SUCCESS: WebSocket streaming active. ID: ${clientId}`);
     };
 
+    // Listen for live messages broadcasted from the server
     ws.current.onmessage = (e) => {
       const response = JSON.parse(e.data);
       if (response.type === 'ROUND_COMPLETE') {
         setCurrentRound(response.round);
-        addLog(`Global Round ${response.round} complete. Downloaded synced weights.`);
+        addLog(`🔥 Global Round ${response.round} finalized! Synchronized master weights.`);
       }
     };
 
+    // Catch connection drops or timeout issues
     ws.current.onerror = (err) => {
       setStatus('Error');
-      addLog(`Network pipeline error: ${err.message}`);
+      addLog(`WebSocket connection dropped or timed out.`);
     };
 
+    // Handle socket closure
     ws.current.onclose = () => {
       setStatus('Disconnected');
-      addLog('Socket stream closed by host.');
+      addLog('Socket connection closed by host.');
     };
   };
 
   const simulateLocalTrainingAndUpload = () => {
     if (status !== 'Connected') {
-      addLog('Cannot execute: Socket pipeline downstream is dead.');
+      addLog('Cannot execute: WebSocket stream is offline.');
       return;
     }
+    
     addLog('Loading local dataset samples into memory...');
-    // Simulated weights update step
+    
     setTimeout(() => {
       addLog('Training localized Tiny CNN over 5 epochs...');
+      
+      // Generating our localized weight matrix delta parameters
       const fakeWeights = {
         "conv1.weight": Array(72).fill(0).map(() => Math.random() * 0.1),
         "conv1.bias": Array(8).fill(0).map(() => Math.random() * 0.01),
@@ -63,13 +78,16 @@ export default function App() {
         "fc1.bias": Array(10).fill(0).map(() => Math.random() * 0.01)
       };
       
-      addLog('Uploading calculated weight tensors to central node...');
+      addLog('Streaming weight matrices over open WebSocket channel...');
+      
+      // Instantly push the data over the open socket connection frame
       ws.current.send(JSON.stringify({
         type: 'CLIENT_UPDATE',
         client_id: clientId,
         weights: fakeWeights
       }));
-    }, 1500);
+      
+    }, 1500); // 1.5-second training processing simulation delay
   };
 
   return (
