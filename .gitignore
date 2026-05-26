@@ -33,3 +33,6 @@ web/server/__pycache__
 web/server/data
 web/client/__pycache__
 web/client/downloads
+
+federated_server/app/__pycache__
+federated_server/venv
