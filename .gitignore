@@ -34,5 +34,5 @@ web/server/data
 web/client/__pycache__
 web/client/downloads
 
-federated_server/app/__pycache__
-federated_server/venv
+edge_env/
+executorch/

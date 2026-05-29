@@ -1,9 +1,11 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from app.aggregator import FedAvgAggregator
+from aggregator import FedAvgAggregator
 import pydantic
 from typing import Dict, List, Any
 import uvicorn
+from dotenv import load_dotenv
+import os
 
 app = FastAPI(title="Federated learning Core Orchestrator")
 
@@ -59,3 +61,9 @@ async def websocket_fl_stream(websocket: WebSocket):
                     })
     except WebSocketDisconnect:
         pass
+
+if __name__ == "__main__":
+    load_dotenv()
+    HOST = os.getenv("TAILSCALE_IP")
+    PORT = int(os.getenv("PORT"))
+    uvicorn.run("main:app",host=HOST,port=PORT,reload=True)

@@ -4,3 +4,4 @@ numpy
 pydantic
 torch
 uvicorn[standard]
+python-multipart
